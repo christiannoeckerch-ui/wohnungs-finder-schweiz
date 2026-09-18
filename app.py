@@ -1,10 +1,6 @@
 import streamlit as st
 from urllib.parse import quote_plus
 
-# -------------------------------------------------
-# SEITENEINSTELLUNGEN
-# -------------------------------------------------
-
 st.set_page_config(
     page_title="Wohnungs-Finder Schweiz",
     page_icon="🏠",
@@ -13,17 +9,17 @@ st.set_page_config(
 
 st.title("🏠 Wohnungs-Finder Schweiz")
 st.write(
-    "Finde Mietwohnungen, die möglichst gut zu deinen "
-    "persönlichen Wunschkriterien passen."
+    "Wohnungen suchen, vergleichen und nach deinen persönlichen "
+    "Wunschkriterien bewerten."
 )
 
 st.divider()
 
-# -------------------------------------------------
-# REGION
-# -------------------------------------------------
+# =========================================================
+# SUCHPROFIL
+# =========================================================
 
-st.header("📍 Wo suchst du?")
+st.header("📍 1. Suchprofil")
 
 standard_gemeinden = [
     "Reinach BL",
@@ -57,17 +53,11 @@ weitere_orte = st.text_input(
     placeholder="z.B. Oberwil BL, Therwil, Sissach"
 )
 
-# -------------------------------------------------
-# PREIS UND GRÖSSE
-# -------------------------------------------------
-
-st.header("💰 Preis & Grösse")
-
 col1, col2, col3 = st.columns(3)
 
 with col1:
     max_miete = st.number_input(
-        "Max. Gesamtpreis pro Monat (CHF)",
+        "Max. Gesamtpreis inkl. NK + Parkplatz (CHF)",
         min_value=500,
         max_value=10000,
         value=1800,
@@ -88,321 +78,437 @@ with col3:
         index=4,
     )
 
-st.caption(
-    "Der maximale Gesamtpreis soll Nettomiete, Nebenkosten "
-    "und den gewünschten Autoabstellplatz umfassen."
-)
-
-# -------------------------------------------------
-# AUSSTATTUNG
-# -------------------------------------------------
-
-st.header("🏡 Ausstattung")
+st.subheader("Ausstattung")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    nicht_eg = st.checkbox(
-        "Nicht im Erdgeschoss",
-        value=True
+    nicht_eg = st.checkbox("Nicht im Erdgeschoss", True)
+    balkon = st.checkbox("Balkon / Terrasse", True)
+    modern = st.checkbox("Moderner Ausbau", True)
+    ruhig = st.checkbox("Ruhige Wohnlage", True)
+
+with col2:
+    parkplatz = st.checkbox("Autoabstellplatz / Parkplatz", True)
+    dusche = st.checkbox("Begehbare Dusche", True)
+    keine_badewanne = st.checkbox("Keine Badewanne", True)
+    oev = st.checkbox("Gute ÖV-Anbindung", True)
+
+steuer = st.checkbox(
+    "Niedriger Steuerfuss bevorzugt",
+    True
+)
+
+st.caption(
+    "Standardprofil: erste Wohnung in der Region Basel. "
+    "Alle Einstellungen können für andere Personen geändert werden."
+)
+
+# =========================================================
+# SUCHPORTALE
+# =========================================================
+
+st.divider()
+st.header("🌐 2. Wohnungen suchen")
+
+alle_orte = list(gemeinden)
+
+if weitere_orte.strip():
+    alle_orte += [
+        x.strip()
+        for x in weitere_orte.split(",")
+        if x.strip()
+    ]
+
+if alle_orte:
+
+    suchorte = " ".join(alle_orte)
+
+    suchtext = (
+        f"Mietwohnung {suchorte} "
+        f"{min_zimmer} {max_zimmer} Zimmer "
+        f"CHF {max_miete} Balkon Parkplatz Dusche"
     )
 
-    balkon = st.checkbox(
-        "Balkon / Terrasse",
-        value=True
+    google_url = (
+        "https://www.google.com/search?q="
+        + quote_plus(suchtext)
     )
 
-    moderne_wohnung = st.checkbox(
-        "Moderner Ausbau",
-        value=True
-    )
+    col1, col2, col3 = st.columns(3)
 
-    ruhige_lage = st.checkbox(
-        "Ruhige Wohnlage",
-        value=True
+    with col1:
+        st.link_button(
+            "🔎 Comparis öffnen",
+            "https://www.comparis.ch/immobilien/",
+            use_container_width=True
+        )
+
+    with col2:
+        st.link_button(
+            "🏠 Flatfox öffnen",
+            "https://flatfox.ch/",
+            use_container_width=True
+        )
+
+    with col3:
+        st.link_button(
+            "🌐 Websuche starten",
+            google_url,
+            use_container_width=True
+        )
+
+else:
+    st.warning("Bitte mindestens einen Suchort auswählen.")
+
+# =========================================================
+# INSERAT PRÜFEN
+# =========================================================
+
+st.divider()
+st.header("🤖 3. Inserat prüfen")
+
+st.write(
+    "Hier kannst du die Angaben einer gefundenen Wohnung "
+    "eintragen. Der Agent berechnet daraus einen Match-Score."
+)
+
+inserat_url = st.text_input(
+    "Link zum Originalinserat",
+    placeholder="https://..."
+)
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    titel = st.text_input(
+        "Wohnung / Titel",
+        placeholder="z.B. moderne 3½-Zimmer-Wohnung"
     )
 
 with col2:
-    parkplatz = st.checkbox(
-        "Autoabstellplatz / Parkplatz",
-        value=True
+    ort = st.text_input(
+        "Ort",
+        placeholder="z.B. Reinach BL"
     )
 
-    begehbare_dusche = st.checkbox(
-        "Begehbare Dusche",
-        value=True
+with col3:
+    zimmer = st.number_input(
+        "Zimmer",
+        min_value=1.0,
+        max_value=10.0,
+        value=3.0,
+        step=0.5
     )
 
-    keine_badewanne = st.checkbox(
-        "Keine Badewanne",
-        value=True
+st.subheader("💰 Kosten")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    nettomiete = st.number_input(
+        "Nettomiete CHF",
+        min_value=0,
+        value=1500,
+        step=50
     )
 
-    gute_oev = st.checkbox(
-        "Gute ÖV-Anbindung",
-        value=True
+with col2:
+    nebenkosten = st.number_input(
+        "Nebenkosten CHF",
+        min_value=0,
+        value=200,
+        step=10
     )
 
-# -------------------------------------------------
-# GEMEINDE
-# -------------------------------------------------
+with col3:
+    parkplatz_kosten = st.number_input(
+        "Parkplatz CHF",
+        min_value=0,
+        value=0,
+        step=10
+    )
 
-st.header("🏛️ Gemeinde")
+gesamtpreis = nettomiete + nebenkosten + parkplatz_kosten
 
-steuerfuss = st.checkbox(
-    "Niedriger Steuerfuss bevorzugt",
-    value=True
+st.metric(
+    "Gesamtpreis inkl. NK + Parkplatz",
+    f"CHF {gesamtpreis:,.0f}"
 )
 
-# -------------------------------------------------
-# PRIORITÄTEN
-# -------------------------------------------------
+st.subheader("🏡 Angaben aus dem Inserat")
 
-st.header("⭐ Was ist besonders wichtig?")
+optionen = ["Ja", "Nein", "Unbekannt"]
 
-prioritaeten = st.multiselect(
-    "Diese Kriterien stärker gewichten",
-    [
-        "Preis",
-        "Ruhige Lage",
-        "Moderner Ausbau",
-        "Balkon / Terrasse",
-        "Parkplatz",
-        "Begehbare Dusche",
-        "Keine Badewanne",
-        "ÖV-Anbindung",
-        "Niedriger Steuerfuss",
-    ],
-    default=[
-        "Preis",
-        "Ruhige Lage",
-        "Begehbare Dusche",
-    ],
+col1, col2 = st.columns(2)
+
+with col1:
+    i_nicht_eg = st.selectbox(
+        "Nicht Erdgeschoss?",
+        optionen,
+        index=2
+    )
+
+    i_balkon = st.selectbox(
+        "Balkon / Terrasse?",
+        optionen,
+        index=2
+    )
+
+    i_modern = st.selectbox(
+        "Moderner Ausbau?",
+        optionen,
+        index=2
+    )
+
+    i_ruhig = st.selectbox(
+        "Ruhige Lage?",
+        optionen,
+        index=2
+    )
+
+with col2:
+    i_parkplatz = st.selectbox(
+        "Parkplatz vorhanden?",
+        optionen,
+        index=2
+    )
+
+    i_dusche = st.selectbox(
+        "Begehbare Dusche?",
+        optionen,
+        index=2
+    )
+
+    i_badewanne = st.selectbox(
+        "Badewanne vorhanden?",
+        optionen,
+        index=2
+    )
+
+    i_oev = st.selectbox(
+        "Gute ÖV-Anbindung?",
+        optionen,
+        index=2
+    )
+
+i_steuer = st.selectbox(
+    "Steuerlich attraktive Gemeinde?",
+    optionen,
+    index=2
 )
 
-# -------------------------------------------------
-# SUCHBEGRIFF ERSTELLEN
-# -------------------------------------------------
+# =========================================================
+# MATCH SCORE
+# =========================================================
 
-def suchtext_erstellen(ort):
-    begriffe = [
-        f"Mietwohnung {ort}",
-        f"{min_zimmer} bis {max_zimmer} Zimmer",
-        f"max CHF {max_miete}",
-    ]
+def pruefen(gewuenscht, wert, umgekehrt=False):
 
-    if balkon:
-        begriffe.append("Balkon")
+    if not gewuenscht:
+        return None
 
-    if parkplatz:
-        begriffe.append("Parkplatz")
+    if wert == "Unbekannt":
+        return None
 
-    if begehbare_dusche:
-        begriffe.append("Dusche")
+    if umgekehrt:
+        return wert == "Nein"
 
-    if keine_badewanne:
-        begriffe.append("-Badewanne")
+    return wert == "Ja"
 
-    return " ".join(begriffe)
-
-
-# -------------------------------------------------
-# SUCHE
-# -------------------------------------------------
-
-st.divider()
 
 if st.button(
-    "🔎 Wohnungen suchen",
+    "⭐ Match berechnen",
     type="primary",
-    use_container_width=True,
+    use_container_width=True
 ):
 
-    alle_orte = list(gemeinden)
+    punkte = 0
+    maximal = 0
+    details = []
 
-    if weitere_orte.strip():
-        extra = [
-            ort.strip()
-            for ort in weitere_orte.split(",")
-            if ort.strip()
-        ]
+    # Preis
+    maximal += 3
 
-        alle_orte.extend(extra)
-
-    if not alle_orte:
-        st.warning(
-            "Bitte mindestens einen Ort auswählen oder eingeben."
+    if gesamtpreis <= max_miete:
+        punkte += 3
+        details.append(
+            ("✅", "Gesamtpreis",
+             f"CHF {gesamtpreis:,.0f} – innerhalb Budget")
+        )
+    else:
+        details.append(
+            ("❌", "Gesamtpreis",
+             f"CHF {gesamtpreis:,.0f} – über Budget")
         )
 
-    elif min_zimmer > max_zimmer:
-        st.error(
-            "Die minimale Zimmerzahl darf nicht grösser "
-            "als die maximale Zimmerzahl sein."
+    # Zimmer
+    maximal += 2
+
+    if min_zimmer <= zimmer <= max_zimmer:
+        punkte += 2
+        details.append(
+            ("✅", "Zimmer", f"{zimmer}")
+        )
+    else:
+        details.append(
+            ("❌", "Zimmer", f"{zimmer}")
+        )
+
+    pruefungen = [
+        (
+            "Nicht Erdgeschoss",
+            nicht_eg,
+            i_nicht_eg,
+            False
+        ),
+        (
+            "Balkon / Terrasse",
+            balkon,
+            i_balkon,
+            False
+        ),
+        (
+            "Moderner Ausbau",
+            modern,
+            i_modern,
+            False
+        ),
+        (
+            "Ruhige Lage",
+            ruhig,
+            i_ruhig,
+            False
+        ),
+        (
+            "Parkplatz",
+            parkplatz,
+            i_parkplatz,
+            False
+        ),
+        (
+            "Begehbare Dusche",
+            dusche,
+            i_dusche,
+            False
+        ),
+        (
+            "Keine Badewanne",
+            keine_badewanne,
+            i_badewanne,
+            True
+        ),
+        (
+            "ÖV-Anbindung",
+            oev,
+            i_oev,
+            False
+        ),
+        (
+            "Steuerfuss",
+            steuer,
+            i_steuer,
+            False
+        ),
+    ]
+
+    for name, gewuenscht, wert, umgekehrt in pruefungen:
+
+        if gewuenscht:
+
+            maximal += 1
+
+            ergebnis = pruefen(
+                gewuenscht,
+                wert,
+                umgekehrt
+            )
+
+            if ergebnis is True:
+                punkte += 1
+                details.append(
+                    ("✅", name, "erfüllt")
+                )
+
+            elif ergebnis is False:
+                details.append(
+                    ("❌", name, "nicht erfüllt")
+                )
+
+            else:
+                details.append(
+                    ("❓", name, "nicht angegeben")
+                )
+
+    if maximal > 0:
+        score = round(
+            punkte / maximal * 100
+        )
+    else:
+        score = 0
+
+    st.divider()
+    st.header("📊 Ergebnis")
+
+    if score >= 85:
+        st.success(
+            f"🟢 Match: {score}% – sehr hohe Übereinstimmung"
+        )
+
+    elif score >= 70:
+        st.warning(
+            f"🟡 Match: {score}% – gute Übereinstimmung"
         )
 
     else:
-
-        st.success(
-            f"Suchprofil für {len(alle_orte)} Ort(e) erstellt."
+        st.error(
+            f"🔴 Match: {score}% – mehrere Kriterien fehlen"
         )
 
-        # -----------------------------------------
-        # SUCHPROFIL
-        # -----------------------------------------
+    if titel:
+        st.write(f"**Wohnung:** {titel}")
 
-        st.subheader("🎯 Aktuelles Suchprofil")
+    if ort:
+        st.write(f"**Ort:** {ort}")
 
-        profil1, profil2, profil3 = st.columns(3)
+    st.write(
+        f"**Gesamtpreis:** CHF {gesamtpreis:,.0f}"
+    )
 
-        with profil1:
-            st.metric(
-                "Max. Gesamtpreis",
-                f"CHF {max_miete:,.0f}"
-            )
+    st.subheader("Kriterien")
 
-        with profil2:
-            st.metric(
-                "Zimmer",
-                f"{min_zimmer} – {max_zimmer}"
-            )
-
-        with profil3:
-            st.metric(
-                "Suchorte",
-                len(alle_orte)
-            )
-
+    for symbol, name, text in details:
         st.write(
-            "**Orte:** " + ", ".join(alle_orte)
+            f"{symbol} **{name}:** {text}"
         )
 
-        # -----------------------------------------
-        # KRITERIEN
-        # -----------------------------------------
-
-        kriterien = []
-
-        if nicht_eg:
-            kriterien.append("Nicht EG")
-
-        if balkon:
-            kriterien.append("Balkon / Terrasse")
-
-        if moderne_wohnung:
-            kriterien.append("Moderner Ausbau")
-
-        if ruhige_lage:
-            kriterien.append("Ruhige Lage")
-
-        if parkplatz:
-            kriterien.append("Parkplatz")
-
-        if begehbare_dusche:
-            kriterien.append("Begehbare Dusche")
-
-        if keine_badewanne:
-            kriterien.append("Keine Badewanne")
-
-        if gute_oev:
-            kriterien.append("Gute ÖV-Anbindung")
-
-        if steuerfuss:
-            kriterien.append("Niedriger Steuerfuss")
-
-        st.write(
-            "**Gewünschte Kriterien:** "
-            + ", ".join(kriterien)
+    if inserat_url:
+        st.link_button(
+            "🏠 Originalinserat öffnen",
+            inserat_url
         )
 
-        # -----------------------------------------
-        # PORTALE
-        # -----------------------------------------
-
-        st.divider()
-
-        st.header("🌐 Wohnungssuche im Internet")
-
-        st.write(
-            "Öffne die Suchportale für den gewünschten Ort. "
-            "Die Treffer können danach mit unserem Suchprofil "
-            "verglichen werden."
+    if gesamtpreis > max_miete:
+        st.error(
+            f"Die Wohnung überschreitet das Budget "
+            f"von CHF {max_miete:,.0f} um "
+            f"CHF {gesamtpreis - max_miete:,.0f}."
         )
 
-        for ort in alle_orte:
+    unbekannt = sum(
+        1
+        for symbol, _, _ in details
+        if symbol == "❓"
+    )
 
-            st.subheader(f"📍 {ort}")
-
-            suchtext = suchtext_erstellen(ort)
-            google_suche = quote_plus(suchtext)
-
-            col1, col2, col3, col4 = st.columns(4)
-
-            with col1:
-                st.link_button(
-                    "🏠 Homegate",
-                    "https://www.homegate.ch/",
-                    use_container_width=True,
-                )
-
-            with col2:
-                st.link_button(
-                    "🏢 ImmoScout24",
-                    "https://www.immoscout24.ch/",
-                    use_container_width=True,
-                )
-
-            with col3:
-                st.link_button(
-                    "🔎 Comparis",
-                    "https://www.comparis.ch/immobilien/",
-                    use_container_width=True,
-                )
-
-            with col4:
-                st.link_button(
-                    "🏘️ Flatfox",
-                    "https://flatfox.ch/",
-                    use_container_width=True,
-                )
-
-            st.link_button(
-                f"🔍 Websuche nach Wohnungen in {ort}",
-                "https://www.google.com/search?q="
-                + google_suche,
-                use_container_width=True,
-            )
-
-        # -----------------------------------------
-        # NÄCHSTER AUSBAUSCHRITT
-        # -----------------------------------------
-
-        st.divider()
-
-        st.header("🤖 Nächster Schritt: automatische Bewertung")
-
+    if unbekannt:
         st.info(
-            "Als nächste Ausbaustufe soll der Agent einzelne "
-            "Wohnungsinserate automatisch analysieren und einen "
-            "Match-Score berechnen. Dabei prüfen wir unter anderem "
-            "Gesamtpreis, Zimmerzahl, Parkplatz, Balkon, Stockwerk, "
-            "Dusche/Badewanne, ÖV, Lage und modernen Ausbau."
+            f"{unbekannt} Kriterium/Kriterien konnten "
+            "noch nicht beurteilt werden."
         )
-
-        st.write("**Prioritäten:**")
-
-        if prioritaeten:
-            for prioritaet in prioritaeten:
-                st.write(f"⭐ {prioritaet}")
-        else:
-            st.write("Keine zusätzlichen Prioritäten gewählt.")
-
-# -------------------------------------------------
-# HINWEIS
-# -------------------------------------------------
 
 st.divider()
 
 st.caption(
-    "Wohnungs-Finder Schweiz – Angaben zu Preis, Nebenkosten, "
-    "Parkplatz und Ausstattung immer im Originalinserat prüfen."
+    "Wohnungs-Finder Schweiz – Angaben immer mit dem "
+    "Originalinserat und dem Mietvertrag überprüfen."
 )
