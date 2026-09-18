@@ -153,7 +153,7 @@ def ort_ist_erlaubt(
     suchorte,
 ):
     """
-    Version 9.6:
+    Version 9.7:
     Eine Wohnung wird nur übernommen,
     wenn ihr Ort wirklich zu den gewählten
     Suchorten gehört.
@@ -247,7 +247,7 @@ def wohnungs_schluessel(
     wohnung,
 ):
     """
-    Version 9.6:
+    Version 9.7:
     Gleiche Strasse + Ort = gleiche Wohnung.
 
     Dadurch verschwinden Dubletten,
@@ -363,7 +363,7 @@ def tavily_suche(
     payload = {
         "api_key": api_key,
         "query": suchtext,
-        "search_depth": "advanced",
+        "search_depth": "basic",
         "max_results": max_results,
         "include_answer": False,
         "include_raw_content": True,
@@ -409,7 +409,7 @@ def ki_extrahiere_paket(
             or ""
         )
 
-        text = text[:4500]
+        text = text[:2800]
 
         kompakte_treffer.append(
             {
@@ -548,7 +548,10 @@ null = unbekannt
 
 nicht_erdgeschoss:
 true bei 1., 2., 3. Stock usw.
-false bei Erdgeschoss.
+false bei Erdgeschoss, EG, Parterre, Hochparterre oder ground floor.
+WICHTIG: Wenn bei den Eckdaten "Geschoss nicht verfügbar" steht,
+aber in der Beschreibung "Parterre", "Erdgeschoss" oder "EG",
+gilt nicht_erdgeschoss trotzdem als false.
 
 balkon:
 true bei Balkon oder Terrasse.
@@ -610,6 +613,85 @@ TREFFER:
 
 
 # =========================================================
+# SCHNELLE TEXTKONTROLLE
+# =========================================================
+
+def lokale_textkontrolle(analyse, original):
+    """
+    Version 9.7:
+    Einfache, eindeutige Begriffe werden direkt im
+    gelieferten Seitentext geprüft. Das ist schneller
+    und robuster als dafür nochmals KI aufzurufen.
+    """
+    text = " ".join([
+        str(original.get("title", "") or ""),
+        str(original.get("content", "") or ""),
+        str(original.get("raw_content", "") or ""),
+    ]).lower()
+
+    # Erdgeschoss / Parterre
+    eg_muster = [
+        r"\bparterre\b",
+        r"\berdgeschoss\b",
+        r"\bhochparterre\b",
+        r"\bground floor\b",
+        r"\bim eg\b",
+        r"\beg-wohnung\b",
+    ]
+    if any(re.search(m, text) for m in eg_muster):
+        analyse["nicht_erdgeschoss"] = False
+
+    # Eindeutige positive Hinweise – nur setzen, wenn KI noch nichts wusste.
+    if analyse.get("balkon") is None:
+        if re.search(r"\bbalkon\b|\bterrasse\b", text):
+            analyse["balkon"] = True
+
+    if analyse.get("parkplatz") is None:
+        if re.search(
+            r"\bparkplatz\b|\bautoabstellplatz\b|\beinstellplatz\b|"
+            r"\btiefgaragenplatz\b|\bgaragenplatz\b",
+            text,
+        ):
+            analyse["parkplatz"] = True
+
+    if analyse.get("begehbare_dusche") is None:
+        if re.search(
+            r"\bwalk[- ]?in[- ]?dusche\b|\bbodengleiche dusche\b|"
+            r"\bbodenebene dusche\b|\bbegehbare dusche\b",
+            text,
+        ):
+            analyse["begehbare_dusche"] = True
+
+    if analyse.get("badewanne") is None:
+        if re.search(r"\bbadewanne\b|\bbad mit wanne\b", text):
+            analyse["badewanne"] = True
+
+    if analyse.get("modern") is None:
+        if re.search(
+            r"\bneubau\b|\bneuwertig\b|\bmodern\b|\bsaniert\b|"
+            r"\brenoviert\b|\bhochwertig", text
+        ):
+            analyse["modern"] = True
+
+    if analyse.get("ruhig") is None:
+        if re.search(
+            r"\bruhige lage\b|\bruhig gelegen\b|\bruhige wohnlage\b",
+            text,
+        ):
+            analyse["ruhig"] = True
+
+    if analyse.get("gute_oev") is None:
+        if re.search(
+            r"\böffentliche verkehr\b|\bö[vV]\b|\bbushaltestelle\b|"
+            r"\btramhaltestelle\b|\bbahnhof\b",
+            text,
+        ):
+            analyse["gute_oev"] = True
+
+    return analyse
+
+
+# =========================================================
 # PREISE
 # =========================================================
 
@@ -617,7 +699,7 @@ def preise_bereinigen(
     analyse,
 ):
     """
-    Version 9.6:
+    Version 9.7:
     Preisangaben werden nach der KI
     nochmals logisch geprüft.
     """
@@ -1458,7 +1540,7 @@ if st.button(
 
         try:
             statusfeld.write(
-                "🔎 Suche aktuelle Wohnungen ..."
+                "⚡ Schnellsuche nach aktuellen Wohnungen ..."
             )
 
             ort_text = " OR ".join(
@@ -1478,7 +1560,7 @@ if st.button(
 
             treffer = tavily_suche(
                 suchtext,
-                max_results=10,
+                max_results=8,
             )
 
             fortschritt.progress(
@@ -1516,7 +1598,7 @@ if st.button(
                 )
 
             gefiltert = (
-                gefiltert[:8]
+                gefiltert[:6]
             )
 
             if not gefiltert:
@@ -1528,62 +1610,19 @@ if st.button(
                 )
 
             else:
-                pakete = [
-                    gefiltert[
-                        i:i + 4
-                    ]
-                    for i in range(
-                        0,
-                        len(
-                            gefiltert
-                        ),
-                        4,
-                    )
-                ]
-
-                alle_analysen = []
-
-                for (
-                    paket_nr,
-                    paket,
-                ) in enumerate(
-                    pakete,
-                    start=1,
-                ):
-                    statusfeld.write(
-                        f"🤖 KI prüft Paket "
-                        f"{paket_nr} von "
-                        f"{len(pakete)} ..."
-                    )
-
-                    fortschritt.progress(
-                        30
-                        + int(
-                            (
-                                paket_nr - 1
-                            )
-                            / len(pakete)
-                            * 50
-                        )
-                    )
-
-                    try:
-                        analysen = (
-                            ki_extrahiere_paket(
-                                paket
-                            )
-                        )
-
-                        alle_analysen.extend(
-                            analysen
-                        )
-
-                    except Exception:
-                        continue
-
-                fortschritt.progress(
-                    85
+                statusfeld.write(
+                    "🤖 KI prüft die gefundenen Wohnungen in einem Durchgang ..."
                 )
+                fortschritt.progress(45)
+
+                try:
+                    alle_analysen = ki_extrahiere_paket(
+                        gefiltert
+                    )
+                except Exception:
+                    alle_analysen = []
+
+                fortschritt.progress(85)
 
                 ergebnisse = []
                 bekannte_wohnungen = set()
@@ -1626,6 +1665,14 @@ if st.button(
 
                     if original is None:
                         continue
+
+                    # Version 9.7:
+                    # Eindeutige Begriffe wie Parterre/EG, Balkon,
+                    # Parkplatz usw. direkt aus dem Seitentext ergänzen.
+                    analyse = lokale_textkontrolle(
+                        analyse,
+                        original,
+                    )
 
                     zimmer = sichere_float_zahl(
                         analyse.get(
