@@ -1,4 +1,5 @@
 import json
+import re
 from urllib.parse import urlparse
 
 import requests
@@ -110,20 +111,65 @@ def adresse_anzeigen(strasse, ort):
     return ", ".join(teile)
 
 
+def normalisiere_text(text):
+    if text is None:
+        return ""
+
+    text = str(text).lower().strip()
+    text = text.replace("strasse", "str")
+    text = text.replace("straße", "str")
+    text = re.sub(r"[^\wäöüéèà0-9]", "", text)
+
+    return text
+
+
+def brauchbare_strasse(strasse):
+    """
+    Version 9.5:
+    Nur Treffer mit einer echten Strasse/Hausnummer
+    werden als konkrete Wohnung angezeigt.
+    """
+
+    if not strasse:
+        return False
+
+    text = str(strasse).strip()
+
+    if len(text) < 3:
+        return False
+
+    # Eine Hausnummer muss vorkommen.
+    if not re.search(r"\d", text):
+        return False
+
+    # Nur PLZ wie "4143" ist keine Strasse.
+    if re.fullmatch(r"\d{4}", text):
+        return False
+
+    return True
+
+
 def wohnungs_schluessel(wohnung):
+    """
+    Dubletten werden primär anhand von
+    Strasse + Ort + Zimmer erkannt.
+
+    Der Preis wird bewusst NICHT verwendet:
+    dieselbe Wohnung kann auf zwei Portalen
+    mit leicht unterschiedlichen Preisangaben
+    auftauchen.
+    """
+
     return (
-        str(
-            wohnung.get("strasse") or ""
-        ).lower().strip(),
-        str(
-            wohnung.get("ort") or ""
-        ).lower().strip(),
+        normalisiere_text(
+            wohnung.get("strasse")
+        ),
+        normalisiere_text(
+            wohnung.get("ort")
+        ),
         str(
             wohnung.get("zimmer") or ""
-        ).lower().strip(),
-        str(
-            wohnung.get("angegebene_miete") or ""
-        ).lower().strip(),
+        ).strip(),
     )
 
 
@@ -257,8 +303,6 @@ def ki_extrahiere_paket(
             or ""
         )
 
-        # Version 9.4:
-        # nur maximal 4'500 Zeichen pro Webseite
         text = text[:4500]
 
         kompakte_treffer.append(
@@ -506,6 +550,50 @@ def gesamtpreis_berechnen(
 
 
 # =========================================================
+# HARTER BUDGETFILTER – NEU 9.5
+# =========================================================
+
+def ist_innerhalb_budget(
+    analyse,
+    max_miete,
+    parkplatz_gewuenscht,
+):
+    """
+    False bedeutet:
+    Diese Wohnung kann das Budget sicher nicht mehr
+    einhalten und wird nicht angezeigt.
+
+    Bei unbekannten Zusatzkosten bleibt sie vorerst
+    sichtbar.
+    """
+
+    angegebene_miete = sichere_float_zahl(
+        analyse.get("angegebene_miete")
+    )
+
+    # Bereits die sichtbare Miete ist über Budget.
+    if (
+        angegebene_miete is not None
+        and angegebene_miete > max_miete
+    ):
+        return False
+
+    gesamtpreis = gesamtpreis_berechnen(
+        analyse,
+        parkplatz_gewuenscht,
+    )
+
+    # Vollständiger Gesamtpreis bekannt und zu hoch.
+    if (
+        gesamtpreis is not None
+        and gesamtpreis > max_miete
+    ):
+        return False
+
+    return True
+
+
+# =========================================================
 # BEWERTUNG
 # =========================================================
 
@@ -544,7 +632,7 @@ def bewerte_wohnung(
         analyse.get("zimmer")
     )
 
-    # PREIS = 3
+    # PREIS
     gesamt_wunschpunkte += 3
 
     if gesamtpreis is None:
@@ -595,7 +683,7 @@ def bewerte_wohnung(
                 )
             )
 
-    # ZIMMER = 2
+    # ZIMMER
     gesamt_wunschpunkte += 2
 
     if zimmer is None:
@@ -821,19 +909,8 @@ def bewerte_wohnung(
         and zimmer is not None
     )
 
-    if zimmer is None:
-        status = "unvollständig"
-
-    elif not (
-        min_zimmer <= zimmer <= max_zimmer
-    ):
-        status = "Zimmer ausserhalb"
-
-    elif gesamtpreis is None:
+    if gesamtpreis is None:
         status = "Preis offen"
-
-    elif gesamtpreis > max_miete:
-        status = "über Budget"
 
     elif match >= 85:
         status = "sehr passend"
@@ -1078,14 +1155,14 @@ if weitere_orte.strip():
 
 
 # =========================================================
-# AUTOMATISCHE SUCHE – VERSION 9.4
+# AUTOMATISCHE SUCHE – VERSION 9.5
 # =========================================================
 
 st.subheader("🔎 Wohnungen automatisch suchen")
 
 st.caption(
-    "Schnelle Websuche. Die KI verarbeitet die "
-    "gefundenen Seiten anschließend in kleinen Paketen."
+    "Es werden nur Wohnungen angezeigt, deren bereits "
+    "bekannter Mietpreis das Maximalbudget nicht übersteigt."
 )
 
 
@@ -1106,10 +1183,6 @@ if st.button(
         fortschritt = st.progress(5)
 
         try:
-            # -----------------------------------------
-            # 1. TAVILY
-            # -----------------------------------------
-
             statusfeld.write(
                 "🔎 Suche aktuelle Wohnungen ..."
             )
@@ -1124,7 +1197,8 @@ if st.button(
                 f"({ort_text}) "
                 f"{min_zimmer:g} bis "
                 f"{max_zimmer:g} Zimmer "
-                f"Miete CHF Balkon Parkplatz"
+                f"Miete maximal CHF {max_miete:g} "
+                f"Balkon Parkplatz"
             )
 
             treffer = tavily_suche(
@@ -1133,10 +1207,6 @@ if st.button(
             )
 
             fortschritt.progress(30)
-
-            # -----------------------------------------
-            # 2. DUPLIKATE ENTFERNEN
-            # -----------------------------------------
 
             gefiltert = []
             urls = set()
@@ -1161,7 +1231,6 @@ if st.button(
 
                 gefiltert.append(item)
 
-            # Maximal 8 Webseiten
             gefiltert = gefiltert[:8]
 
             if not gefiltert:
@@ -1173,10 +1242,6 @@ if st.button(
                 )
 
             else:
-                # -----------------------------------------
-                # 3. IN PAKETE ZU JE 4 AUFTEILEN
-                # -----------------------------------------
-
                 pakete = [
                     gefiltert[i:i + 4]
                     for i in range(
@@ -1198,21 +1263,12 @@ if st.button(
                         f"{len(pakete)} ..."
                     )
 
-                    start_prozent = 30
-                    end_prozent = 80
-
-                    anteil = (
-                        paket_nr - 1
-                    ) / len(pakete)
-
                     fortschritt.progress(
-                        int(
-                            start_prozent
-                            + anteil
-                            * (
-                                end_prozent
-                                - start_prozent
-                            )
+                        30
+                        + int(
+                            (paket_nr - 1)
+                            / len(pakete)
+                            * 50
                         )
                     )
 
@@ -1228,16 +1284,9 @@ if st.button(
                         )
 
                     except Exception:
-                        # Falls ein Paket scheitert,
-                        # läuft die Suche mit dem
-                        # anderen Paket weiter.
                         continue
 
                 fortschritt.progress(85)
-
-                # -----------------------------------------
-                # 4. WOHNUNGEN AUFBEREITEN
-                # -----------------------------------------
 
                 ergebnisse = []
                 bekannte_wohnungen = set()
@@ -1274,20 +1323,58 @@ if st.button(
                     if original is None:
                         continue
 
+                    # ---------------------------------
+                    # ZIMMER – HARTER FILTER
+                    # ---------------------------------
+
                     zimmer = sichere_float_zahl(
                         analyse.get("zimmer")
                     )
 
-                    # Ohne Zimmerzahl keine
-                    # brauchbare Einzelwohnung
                     if zimmer is None:
                         continue
 
-                    if (
-                        not analyse.get("strasse")
-                        and not analyse.get("ort")
+                    if not (
+                        min_zimmer
+                        <= zimmer
+                        <= max_zimmer
                     ):
                         continue
+
+                    # ---------------------------------
+                    # STRASSE – HARTER FILTER
+                    # ---------------------------------
+
+                    strasse = analyse.get(
+                        "strasse"
+                    )
+
+                    if not brauchbare_strasse(
+                        strasse
+                    ):
+                        continue
+
+                    # ---------------------------------
+                    # ORT MUSS VORHANDEN SEIN
+                    # ---------------------------------
+
+                    if not analyse.get("ort"):
+                        continue
+
+                    # ---------------------------------
+                    # BUDGET – HARTER FILTER
+                    # ---------------------------------
+
+                    if not ist_innerhalb_budget(
+                        analyse,
+                        max_miete,
+                        parkplatz,
+                    ):
+                        continue
+
+                    # ---------------------------------
+                    # DUBLETTEN
+                    # ---------------------------------
 
                     schluessel = (
                         wohnungs_schluessel(
@@ -1330,11 +1417,7 @@ if st.button(
                                 analyse.get("titel")
                                 or "Mietwohnung"
                             ),
-                            "strasse": (
-                                analyse.get(
-                                    "strasse"
-                                )
-                            ),
+                            "strasse": strasse,
                             "ort": analyse.get(
                                 "ort"
                             ),
@@ -1388,33 +1471,37 @@ if st.button(
                         }
                     )
 
-                # -----------------------------------------
-                # 5. SORTIERUNG
-                # -----------------------------------------
+                # -------------------------------------
+                # SORTIERUNG
+                # -------------------------------------
 
                 def sortierwert(x):
-                    zimmer = x.get(
-                        "zimmer"
+                    gesamt = x.get(
+                        "gesamtpreis"
                     )
 
-                    zimmer_passend = (
-                        zimmer is not None
-                        and min_zimmer
-                        <= zimmer
-                        <= max_zimmer
+                    angegeben = x.get(
+                        "angegebene_miete"
                     )
 
-                    preis_bekannt = (
-                        x.get("gesamtpreis")
-                        is not None
+                    preis = (
+                        gesamt
+                        if gesamt is not None
+                        else angegeben
                     )
 
                     return (
-                        zimmer_passend,
-                        preis_bekannt,
+                        x.get(
+                            "gesamtpreis"
+                        ) is not None,
                         x.get(
                             "bestaetigt",
                             0,
+                        ),
+                        -(
+                            preis
+                            if preis is not None
+                            else 99999
                         ),
                     )
 
@@ -1433,16 +1520,15 @@ if st.button(
 
                 if ergebnisse:
                     st.success(
-                        f"✅ {len(ergebnisse)} "
-                        "einzelne Wohnung(en) "
-                        "gefunden."
+                        f"✅ {len(ergebnisse)} passende "
+                        "Wohnung(en) innerhalb der "
+                        "bekannten Budgetgrenze gefunden."
                     )
                 else:
                     st.warning(
-                        "Suchseiten wurden gefunden, "
-                        "aber keine eindeutigen "
-                        "Wohnungen konnten ausgelesen "
-                        "werden."
+                        "Es wurden keine Wohnungen "
+                        "gefunden, die die harten "
+                        "Suchkriterien erfüllen."
                     )
 
         except requests.HTTPError as e:
@@ -1472,7 +1558,7 @@ st.header("🏠 2. Gefundene Wohnungen")
 
 if not st.session_state.suchergebnisse:
     st.info(
-        "Noch keine Wohnungen gesucht."
+        "Noch keine passenden Wohnungen gefunden."
     )
 
 else:
@@ -1489,30 +1575,21 @@ else:
             wohnung.get("match")
         )
 
-        status = wohnung.get(
-            "status",
-            "unvollständig",
+        gesamtpreis = wohnung.get(
+            "gesamtpreis"
         )
 
-        if status == "Preis offen":
+        angegebene_miete = wohnung.get(
+            "angegebene_miete"
+        )
+
+        # Kein grünes Match, solange
+        # Gesamtpreis nicht vollständig bekannt.
+        if gesamtpreis is None:
             symbol = "⚪"
             status_text = (
-                "Preis noch nicht vollständig"
+                "Gesamtpreis noch offen"
             )
-
-        elif status == "Zimmer ausserhalb":
-            symbol = "🔴"
-            status_text = (
-                "Zimmer ausserhalb Suchprofil"
-            )
-
-        elif status == "über Budget":
-            symbol = "🔴"
-            status_text = "Über Budget"
-
-        elif status == "unvollständig":
-            symbol = "⚪"
-            status_text = "Daten unvollständig"
 
         elif match >= 85:
             symbol = "🟢"
@@ -1537,25 +1614,8 @@ else:
             wohnung.get("ort"),
         )
 
-        if not adresse:
-            adresse = "Adresse unbekannt"
-
         zimmer = wohnung.get(
             "zimmer"
-        )
-
-        gesamtpreis = wohnung.get(
-            "gesamtpreis"
-        )
-
-        angegebene_miete = wohnung.get(
-            "angegebene_miete"
-        )
-
-        zimmer_text = (
-            f"{zimmer:g} Zimmer"
-            if zimmer is not None
-            else "Zimmer ❓"
         )
 
         if gesamtpreis is not None:
@@ -1567,16 +1627,19 @@ else:
         elif angegebene_miete is not None:
             preis_text = (
                 f"Miete CHF "
-                f"{angegebene_miete:,.0f} + ?"
+                f"{angegebene_miete:,.0f} + "
+                "offene Kosten"
             )
 
         else:
-            preis_text = "Preis ❓"
+            preis_text = (
+                "Preis noch unbekannt"
+            )
 
         kopf = (
             f"{symbol} {nummer}. "
             f"{adresse} – "
-            f"{zimmer_text} – "
+            f"{zimmer:g} Zimmer – "
             f"{preis_text}"
         )
 
@@ -1586,9 +1649,7 @@ else:
             )
 
             with col1:
-                if wohnung.get(
-                    "kerndaten_vollstaendig"
-                ):
+                if gesamtpreis is not None:
                     st.metric(
                         "Match",
                         f"{match}%",
@@ -1619,23 +1680,20 @@ else:
                 f"{status_text}"
             )
 
-            if wohnung.get("strasse"):
-                st.write(
-                    f"**Strasse:** "
-                    f"{wohnung['strasse']}"
-                )
+            st.write(
+                f"**Strasse:** "
+                f"{wohnung['strasse']}"
+            )
 
-            if wohnung.get("ort"):
-                st.write(
-                    f"**Ort:** "
-                    f"{wohnung['ort']}"
-                )
+            st.write(
+                f"**Ort:** "
+                f"{wohnung['ort']}"
+            )
 
-            if zimmer is not None:
-                st.write(
-                    f"**Zimmer:** "
-                    f"{zimmer:g}"
-                )
+            st.write(
+                f"**Zimmer:** "
+                f"{zimmer:g}"
+            )
 
             if angegebene_miete is not None:
                 st.write(
@@ -1654,8 +1712,9 @@ else:
                 )
             else:
                 st.warning(
-                    "Nebenkosten und/oder "
-                    "Parkplatzkosten sind noch "
+                    "Die bekannte Miete liegt innerhalb "
+                    "des Budgets. Nebenkosten und/oder "
+                    "Parkplatzkosten sind aber noch "
                     "nicht vollständig bekannt."
                 )
 
@@ -1702,17 +1761,21 @@ else:
             ):
                 vorhanden = any(
                     (
-                        x.get("strasse")
-                        == wohnung.get(
-                            "strasse"
+                        normalisiere_text(
+                            x.get("strasse")
                         )
-                        and x.get("ort")
-                        == wohnung.get(
-                            "ort"
+                        == normalisiere_text(
+                            wohnung.get(
+                                "strasse"
+                            )
                         )
-                        and x.get("zimmer")
-                        == wohnung.get(
-                            "zimmer"
+                        and normalisiere_text(
+                            x.get("ort")
+                        )
+                        == normalisiere_text(
+                            wohnung.get(
+                                "ort"
+                            )
                         )
                     )
                     for x in
@@ -2036,7 +2099,8 @@ st.divider()
 st.caption(
     "Wohnungs-Finder Schweiz – automatische "
     "Websuche mit Tavily und KI-Auswertung. "
+    "Maximalbudget wird als harter Filter verwendet. "
     "Preise, Nebenkosten, Parkplatzkosten und "
-    "Verfügbarkeit immer im Originalinserat "
-    "überprüfen. Steuerfüsse BL: Stand 2026."
+    "Verfügbarkeit immer im Originalinserat überprüfen. "
+    "Steuerfüsse BL: Stand 2026."
 )
