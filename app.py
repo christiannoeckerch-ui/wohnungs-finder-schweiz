@@ -17,16 +17,19 @@ st.set_page_config(
 st.title("🏠 Wohnungs-Finder Schweiz")
 st.write(
     "Wohnungen suchen, Inserate mit KI analysieren und nach "
-    "deinen persönlichen Wunschkriterien bewerten."
+    "persönlichen Wunschkriterien bewerten."
 )
 
 st.divider()
+
 
 # =========================================================
 # HILFSFUNKTIONEN
 # =========================================================
 
 def lade_inserat(url):
+    """Versucht, Text direkt von einer Inseratseite zu laden."""
+
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -68,6 +71,8 @@ def lade_inserat(url):
 
 
 def ki_analyse(text):
+    """Analysiert den Inserattext mit OpenAI."""
+
     client = OpenAI(
         api_key=st.secrets["OPENAI_API_KEY"]
     )
@@ -76,7 +81,7 @@ def ki_analyse(text):
 Du analysierst ein Schweizer Mietwohnungs-Inserat.
 
 Extrahiere ausschließlich Informationen, die im Inserat
-wirklich vorhanden sind.
+wirklich vorhanden oder eindeutig daraus ableitbar sind.
 
 Wenn eine Information nicht sicher erkennbar ist,
 verwende null.
@@ -102,22 +107,55 @@ Folgende Felder werden benötigt:
   "gute_oev": null
 }}
 
+REGELN:
+
 Für Ja/Nein-Felder verwende:
+
 true = eindeutig vorhanden bzw. erfüllt
 false = eindeutig nicht vorhanden bzw. nicht erfüllt
-null = nicht sicher aus dem Inserat bestimmbar
+null = nicht sicher bestimmbar
 
 Bei "nicht_erdgeschoss":
-true = Wohnung liegt NICHT im Erdgeschoss.
-false = Wohnung liegt im Erdgeschoss.
+
+true = Wohnung liegt NICHT im Erdgeschoss
+false = Wohnung liegt im Erdgeschoss
+null = Stockwerk unbekannt
 
 Bei "badewanne":
-true = Badewanne vorhanden.
-false = ausdrücklich keine Badewanne.
 
-Geldbeträge nur als Zahl in CHF zurückgeben.
+true = Badewanne vorhanden
+false = ausdrücklich keine Badewanne
+null = unbekannt
 
-Inserat:
+Bei "begehbare_dusche":
+
+true nur, wenn eine bodenebene, begehbare oder Walk-in-Dusche
+ausdrücklich erwähnt wird oder eindeutig beschrieben ist.
+
+Bei "modern":
+
+true, wenn das Inserat eindeutig einen modernen,
+neuwertigen, sanierten oder hochwertigen Ausbau beschreibt.
+
+Bei "ruhig":
+
+true nur, wenn ruhige Lage, ruhiges Quartier,
+verkehrsarme Lage oder Vergleichbares erwähnt wird.
+
+Bei "gute_oev":
+
+true, wenn gute ÖV-Verbindungen oder nahe
+Bus-/Tram-/Bahnhaltestellen erwähnt werden.
+
+Geldbeträge nur als Zahlen in CHF zurückgeben.
+
+Wichtig:
+Wenn nur ein Gesamtmietpreis angegeben ist und keine
+Aufteilung zwischen Nettomiete und Nebenkosten vorhanden ist,
+verwende diesen Betrag bei "nettomiete" und setze
+"nebenkosten" auf null.
+
+Inserattext:
 
 {text}
 """
@@ -129,14 +167,12 @@ Inserat:
 
     output = response.output_text.strip()
 
-    # Falls das Modell Markdown-Codeblöcke zurückgibt
-    output = output.replace(
-        "```json",
-        "",
-    ).replace(
-        "```",
-        "",
-    ).strip()
+    output = (
+        output
+        .replace("```json", "")
+        .replace("```", "")
+        .strip()
+    )
 
     return json.loads(output)
 
@@ -154,7 +190,30 @@ def bool_zu_text(wert):
 def wert_oder_standard(wert, standard):
     if wert is None:
         return standard
+
     return wert
+
+
+def sichere_zahl(wert, standard=0):
+    try:
+        if wert is None:
+            return standard
+
+        return int(float(wert))
+
+    except (ValueError, TypeError):
+        return standard
+
+
+def sichere_float_zahl(wert, standard=3.0):
+    try:
+        if wert is None:
+            return standard
+
+        return float(wert)
+
+    except (ValueError, TypeError):
+        return standard
 
 
 def pruefen(
@@ -180,6 +239,9 @@ def pruefen(
 
 if "analyse" not in st.session_state:
     st.session_state.analyse = {}
+
+if "letzte_quelle" not in st.session_state:
+    st.session_state.letzte_quelle = ""
 
 
 # =========================================================
@@ -266,6 +328,7 @@ with col3:
         index=4,
     )
 
+
 st.subheader("Ausstattung")
 
 col1, col2 = st.columns(2)
@@ -312,14 +375,15 @@ with col2:
         True,
     )
 
+
 steuer = st.checkbox(
     "Niedriger Steuerfuss bevorzugt",
     True,
 )
 
 st.caption(
-    "Standardprofil: erste Wohnung in der Region Basel. "
-    "Alle Einstellungen können für andere Personen geändert werden."
+    "Alle Einstellungen können für andere Personen "
+    "und Regionen geändert werden."
 )
 
 
@@ -339,7 +403,9 @@ if weitere_orte.strip():
         if x.strip()
     ]
 
+
 if alle_orte:
+
     suchorte = " ".join(alle_orte)
 
     suchtext = (
@@ -377,27 +443,48 @@ if alle_orte:
         )
 
 else:
+
     st.warning(
         "Bitte mindestens einen Suchort auswählen."
     )
 
 
 # =========================================================
-# 3. KI-INSERATANALYSE
+# 3. INSERAT MIT KI ANALYSIEREN
 # =========================================================
 
 st.divider()
 st.header("🤖 3. Inserat mit KI prüfen")
 
 st.write(
-    "Link zu einem Wohnungsinserat einfügen. "
-    "Der Agent versucht, die Angaben automatisch auszulesen."
+    "Am zuverlässigsten funktioniert die Analyse, wenn du "
+    "den Text des Inserats unten einfügst. Zusätzlich kannst "
+    "du den Link zum Originalinserat speichern."
 )
 
+
 inserat_url = st.text_input(
-    "Link zum Originalinserat",
+    "Link zum Originalinserat (optional)",
     placeholder="https://...",
 )
+
+
+inserat_text_manuell = st.text_area(
+    "Inserattext einfügen",
+    height=250,
+    placeholder=(
+        "Auf dem Immobilienportal das Inserat öffnen, "
+        "den Beschreibungstext und die wichtigsten Angaben "
+        "kopieren und hier einfügen."
+    ),
+)
+
+
+st.caption(
+    "Tipp: Du kannst auch einen grösseren Textbereich des "
+    "Inserats kopieren. Die KI sucht die relevanten Angaben heraus."
+)
+
 
 if st.button(
     "🤖 Inserat automatisch analysieren",
@@ -405,53 +492,108 @@ if st.button(
     use_container_width=True,
 ):
 
-    if not inserat_url.strip():
-        st.warning(
-            "Bitte zuerst einen Inserat-Link eingeben."
+    text_fuer_analyse = ""
+    quelle = ""
+
+    # -----------------------------------------------------
+    # 1. PRIORITÄT: MANUELL EINGEFÜGTER TEXT
+    # -----------------------------------------------------
+
+    if len(inserat_text_manuell.strip()) >= 50:
+
+        text_fuer_analyse = (
+            inserat_text_manuell.strip()
         )
 
-    else:
+        quelle = "eingefügter Inserattext"
+
+    # -----------------------------------------------------
+    # 2. FALLBACK: URL DIREKT ABRUFEN
+    # -----------------------------------------------------
+
+    elif inserat_url.strip():
+
         try:
+
             with st.spinner(
-                "Inserat wird geladen und mit KI analysiert..."
+                "Versuche Inserat von der Webseite zu laden..."
             ):
-                inserat_text = lade_inserat(
-                    inserat_url
+
+                geladener_text = lade_inserat(
+                    inserat_url.strip()
                 )
 
-                if len(inserat_text) < 200:
-                    raise ValueError(
-                        "Auf der Seite konnte nicht genügend "
-                        "Inserattext gelesen werden."
-                    )
+            if len(geladener_text) >= 200:
+
+                text_fuer_analyse = geladener_text
+                quelle = "Webseite"
+
+        except requests.exceptions.RequestException:
+
+            st.warning(
+                "Das Immobilienportal blockiert den "
+                "automatischen Zugriff. "
+                "Bitte kopiere den Inserattext aus dem "
+                "Originalinserat in das Textfeld oben."
+            )
+
+        except Exception:
+
+            st.warning(
+                "Das Inserat konnte nicht direkt gelesen werden. "
+                "Bitte kopiere den Inserattext in das Textfeld oben."
+            )
+
+    else:
+
+        st.warning(
+            "Bitte einen Inserattext einfügen oder "
+            "einen Inserat-Link angeben."
+        )
+
+
+    # -----------------------------------------------------
+    # KI-ANALYSE
+    # -----------------------------------------------------
+
+    if text_fuer_analyse:
+
+        try:
+
+            with st.spinner(
+                "KI analysiert das Wohnungsinserat..."
+            ):
 
                 analyse = ki_analyse(
-                    inserat_text
+                    text_fuer_analyse
                 )
 
                 st.session_state.analyse = analyse
+                st.session_state.letzte_quelle = quelle
 
             st.success(
-                "Inserat wurde analysiert."
+                f"✅ Inserat erfolgreich analysiert "
+                f"({quelle})."
             )
 
-        except requests.exceptions.RequestException:
+        except KeyError:
+
             st.error(
-                "Das Inserat konnte nicht automatisch "
-                "von der Webseite geladen werden. "
-                "Das Portal blockiert möglicherweise "
-                "den automatischen Zugriff."
+                "Der OpenAI API-Key wurde in den "
+                "Streamlit Secrets nicht gefunden."
             )
 
         except json.JSONDecodeError:
+
             st.error(
                 "Die KI-Antwort konnte nicht korrekt "
                 "ausgewertet werden. Bitte nochmals versuchen."
             )
 
         except Exception as e:
+
             st.error(
-                f"Analyse nicht möglich: {e}"
+                f"KI-Analyse nicht möglich: {e}"
             )
 
 
@@ -459,20 +601,30 @@ analyse = st.session_state.analyse
 
 
 # =========================================================
-# 4. ERKANNTE DATEN / MANUELLE KORREKTUR
+# 4. ERKANNTE ANGABEN
 # =========================================================
 
 st.divider()
 st.header("📝 4. Erkannte Angaben prüfen")
 
-st.write(
-    "Die KI-Ergebnisse können hier kontrolliert "
-    "und bei Bedarf korrigiert werden."
-)
+if analyse:
+
+    st.success(
+        "Die KI hat Angaben erkannt. "
+        "Bitte kurz mit dem Originalinserat vergleichen."
+    )
+
+else:
+
+    st.info(
+        "Noch kein Inserat analysiert."
+    )
+
 
 col1, col2, col3 = st.columns(3)
 
 with col1:
+
     titel = st.text_input(
         "Wohnung / Titel",
         value=str(
@@ -484,6 +636,7 @@ with col1:
     )
 
 with col2:
+
     ort = st.text_input(
         "Ort",
         value=str(
@@ -495,15 +648,14 @@ with col2:
     )
 
 with col3:
+
     zimmer = st.number_input(
         "Zimmer",
         min_value=1.0,
         max_value=10.0,
-        value=float(
-            wert_oder_standard(
-                analyse.get("zimmer"),
-                3.0,
-            )
+        value=sichere_float_zahl(
+            analyse.get("zimmer"),
+            3.0,
         ),
         step=0.5,
     )
@@ -514,40 +666,37 @@ st.subheader("💰 Kosten")
 col1, col2, col3 = st.columns(3)
 
 with col1:
+
     nettomiete = st.number_input(
         "Nettomiete CHF",
         min_value=0,
-        value=int(
-            wert_oder_standard(
-                analyse.get("nettomiete"),
-                0,
-            )
+        value=sichere_zahl(
+            analyse.get("nettomiete"),
+            0,
         ),
         step=50,
     )
 
 with col2:
+
     nebenkosten = st.number_input(
         "Nebenkosten CHF",
         min_value=0,
-        value=int(
-            wert_oder_standard(
-                analyse.get("nebenkosten"),
-                0,
-            )
+        value=sichere_zahl(
+            analyse.get("nebenkosten"),
+            0,
         ),
         step=10,
     )
 
 with col3:
+
     parkplatz_kosten = st.number_input(
         "Parkplatz CHF",
         min_value=0,
-        value=int(
-            wert_oder_standard(
-                analyse.get("parkplatz_kosten"),
-                0,
-            )
+        value=sichere_zahl(
+            analyse.get("parkplatz_kosten"),
+            0,
         ),
         step=10,
     )
@@ -558,6 +707,7 @@ gesamtpreis = (
     + nebenkosten
     + parkplatz_kosten
 )
+
 
 st.metric(
     "Gesamtpreis inkl. NK + Parkplatz",
@@ -573,6 +723,7 @@ optionen = [
 
 
 def index_fuer(wert):
+
     text = bool_zu_text(wert)
 
     return optionen.index(text)
@@ -583,13 +734,12 @@ st.subheader("🏡 Ausstattung")
 col1, col2 = st.columns(2)
 
 with col1:
+
     i_nicht_eg = st.selectbox(
         "Nicht Erdgeschoss?",
         optionen,
         index=index_fuer(
-            analyse.get(
-                "nicht_erdgeschoss"
-            )
+            analyse.get("nicht_erdgeschoss")
         ),
     )
 
@@ -617,7 +767,9 @@ with col1:
         ),
     )
 
+
 with col2:
+
     i_parkplatz = st.selectbox(
         "Parkplatz vorhanden?",
         optionen,
@@ -630,9 +782,7 @@ with col2:
         "Begehbare Dusche?",
         optionen,
         index=index_fuer(
-            analyse.get(
-                "begehbare_dusche"
-            )
+            analyse.get("begehbare_dusche")
         ),
     )
 
@@ -653,21 +803,25 @@ with col2:
     )
 
 
-# Steuerfuss kann aus dem Inserat normalerweise
-# nicht zuverlässig bestimmt werden.
 i_steuer = st.selectbox(
     "Steuerlich attraktive Gemeinde?",
     optionen,
     index=2,
 )
 
+st.caption(
+    "Der Steuerfuss wird derzeit nicht aus dem Inserat "
+    "ermittelt und kann manuell bewertet werden."
+)
+
 
 # =========================================================
-# 5. MATCH
+# 5. MATCH BERECHNEN
 # =========================================================
 
 st.divider()
 st.header("⭐ 5. Match berechnen")
+
 
 if st.button(
     "⭐ Wohnung bewerten",
@@ -678,10 +832,12 @@ if st.button(
     maximal = 0
     details = []
 
-    # Preis besonders wichtig
+
+    # PREIS
     maximal += 3
 
     if gesamtpreis <= max_miete:
+
         punkte += 3
 
         details.append(
@@ -693,6 +849,7 @@ if st.button(
         )
 
     else:
+
         details.append(
             (
                 "❌",
@@ -701,10 +858,12 @@ if st.button(
             )
         )
 
-    # Zimmer
+
+    # ZIMMER
     maximal += 2
 
     if min_zimmer <= zimmer <= max_zimmer:
+
         punkte += 2
 
         details.append(
@@ -716,6 +875,7 @@ if st.button(
         )
 
     else:
+
         details.append(
             (
                 "❌",
@@ -791,6 +951,7 @@ if st.button(
     ) in pruefungen:
 
         if gewuenscht:
+
             maximal += 1
 
             ergebnis = pruefen(
@@ -800,6 +961,7 @@ if st.button(
             )
 
             if ergebnis is True:
+
                 punkte += 1
 
                 details.append(
@@ -811,6 +973,7 @@ if st.button(
                 )
 
             elif ergebnis is False:
+
                 details.append(
                     (
                         "❌",
@@ -820,6 +983,7 @@ if st.button(
                 )
 
             else:
+
                 details.append(
                     (
                         "❓",
@@ -829,30 +993,36 @@ if st.button(
                 )
 
 
-    if maximal > 0:
+    if maximal:
+
         score = round(
             punkte / maximal * 100
         )
 
     else:
+
         score = 0
 
 
     st.subheader("📊 Ergebnis")
 
+
     if score >= 85:
+
         st.success(
             f"🟢 Match: {score}% – "
             "sehr hohe Übereinstimmung"
         )
 
     elif score >= 70:
+
         st.warning(
             f"🟡 Match: {score}% – "
             "gute Übereinstimmung"
         )
 
     else:
+
         st.error(
             f"🔴 Match: {score}% – "
             "mehrere Kriterien fehlen"
@@ -860,14 +1030,18 @@ if st.button(
 
 
     if titel:
+
         st.write(
             f"**Wohnung:** {titel}"
         )
 
+
     if ort:
+
         st.write(
             f"**Ort:** {ort}"
         )
+
 
     st.write(
         f"**Gesamtpreis:** "
@@ -876,6 +1050,7 @@ if st.button(
 
 
     st.subheader("Kriterien")
+
 
     for (
         symbol,
@@ -889,6 +1064,7 @@ if st.button(
 
 
     if inserat_url:
+
         st.link_button(
             "🏠 Originalinserat öffnen",
             inserat_url,
@@ -896,6 +1072,7 @@ if st.button(
 
 
     if gesamtpreis > max_miete:
+
         st.error(
             f"Die Wohnung überschreitet das "
             f"Budget von CHF {max_miete:,.0f} "
@@ -910,7 +1087,9 @@ if st.button(
         if symbol == "❓"
     )
 
+
     if unbekannt:
+
         st.info(
             f"{unbekannt} Kriterium/Kriterien "
             "konnten noch nicht beurteilt werden."
