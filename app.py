@@ -1,5 +1,4 @@
 import json
-import re
 from urllib.parse import urlparse
 
 import requests
@@ -57,7 +56,9 @@ def sichere_float_zahl(wert):
     try:
         if wert is None:
             return None
+
         return float(wert)
+
     except (ValueError, TypeError):
         return None
 
@@ -65,6 +66,7 @@ def sichere_float_zahl(wert):
 def sichere_int_zahl(wert, standard=0):
     try:
         return int(wert)
+
     except (ValueError, TypeError):
         return standard
 
@@ -72,7 +74,9 @@ def sichere_int_zahl(wert, standard=0):
 def quelle_aus_url(url):
     try:
         domain = urlparse(url).netloc.lower()
+
         return domain.replace("www.", "")
+
     except Exception:
         return ""
 
@@ -109,6 +113,31 @@ def adresse_anzeigen(strasse, ort):
         teile.append(str(ort).strip())
 
     return ", ".join(teile)
+
+
+def wohnungs_schluessel(wohnung):
+    strasse = str(
+        wohnung.get("strasse") or ""
+    ).lower().strip()
+
+    ort = str(
+        wohnung.get("ort") or ""
+    ).lower().strip()
+
+    zimmer = str(
+        wohnung.get("zimmer") or ""
+    ).lower().strip()
+
+    preis = str(
+        wohnung.get("angegebene_miete") or ""
+    ).lower().strip()
+
+    return (
+        strasse,
+        ort,
+        zimmer,
+        preis,
+    )
 
 
 # =========================================================
@@ -192,7 +221,8 @@ def tavily_suche(
 
     if not api_key:
         raise RuntimeError(
-            "TAVILY_API_KEY fehlt in den Streamlit Secrets."
+            "TAVILY_API_KEY fehlt in den "
+            "Streamlit Secrets."
         )
 
     payload = {
@@ -219,62 +249,10 @@ def tavily_suche(
 
 
 # =========================================================
-# OFFENSICHTLICHE TREFFERLISTEN VORHER AUSSORTIEREN
+# KI: AUS SUCHSEITEN EINZELNE WOHNUNGEN EXTRAHIEREN
 # =========================================================
 
-def ist_offensichtliche_trefferliste(
-    titel,
-    url,
-):
-    titel_klein = (
-        str(titel)
-        .lower()
-        .strip()
-    )
-
-    # Beispiele:
-    # "75 Wohnungen mieten in Aesch"
-    # "11 Wohnungen in Münchenstein"
-
-    muster = [
-        r"^\d+\s+wohnungen",
-        r"^\d+\s+mietwohnungen",
-        r"wohnungen\s+mieten\s+in",
-        r"wohnungen\s+in\s+.+\s+mieten",
-        r"mietwohnungen\s+in",
-        r"wohnungssuche",
-        r"immobilien\s+in",
-        r"trefferliste",
-    ]
-
-    for pattern in muster:
-        if re.search(
-            pattern,
-            titel_klein,
-        ):
-            return True
-
-    # Typische Suchseiten in URL
-    url_klein = str(url).lower()
-
-    url_muster = [
-        "/trefferliste",
-        "/search",
-        "/suche",
-    ]
-
-    for pattern in url_muster:
-        if pattern in url_klein:
-            return True
-
-    return False
-
-
-# =========================================================
-# EIN KI-AUFRUF FÜR ALLE TREFFER
-# =========================================================
-
-def ki_analysiere_alle_treffer(
+def ki_extrahiere_wohnungen(
     treffer_liste,
 ):
     client = OpenAI(
@@ -289,18 +267,19 @@ def ki_analysiere_alle_treffer(
         treffer_liste,
         start=1,
     ):
-        raw = (
+        text = (
             treffer.get("raw_content")
             or treffer.get("content")
             or ""
         )
 
-        # Pro Treffer begrenzen
-        raw = raw[:6000]
+        # Genug Inhalt für mehrere Inserate,
+        # aber trotzdem Token/Kosten begrenzen.
+        text = text[:9000]
 
         kompakte_treffer.append(
             {
-                "id": nummer,
+                "treffer_id": nummer,
                 "titel": treffer.get(
                     "title",
                     "",
@@ -309,7 +288,7 @@ def ki_analysiere_alle_treffer(
                     "url",
                     "",
                 ),
-                "text": raw,
+                "text": text,
             }
         )
 
@@ -319,36 +298,64 @@ def ki_analysiere_alle_treffer(
     )
 
     prompt = f"""
-Du analysierst Web-Suchergebnisse für Schweizer
-Mietwohnungen.
+Du analysierst Web-Suchergebnisse für Mietwohnungen
+in der Schweiz.
 
-Analysiere ALLE gelieferten Treffer in einem Durchgang.
+WICHTIGE ÄNDERUNG:
 
-WICHTIG:
+Ein Webtreffer kann entweder
 
-- Keine Angaben erfinden.
-- Keine Daten verschiedener Wohnungen vermischen.
-- Trefferlisten mit mehreren Wohnungen verwerfen.
-- Nur konkrete einzelne Mietwohnungen zurückgeben.
-- Wenn etwas unbekannt ist: null.
-- Die URL muss exakt aus dem gelieferten Treffer stammen.
+A) ein einzelnes Wohnungsinserat
 
-Antworte ausschließlich mit gültigem JSON
-in dieser Form:
+oder
+
+B) eine Übersichts-/Suchseite mit mehreren Wohnungen
+
+sein.
+
+Bei einer Übersichtsseite sollst du die EINZELNEN
+Wohnungen, die im gelieferten Text eindeutig erkennbar
+sind, separat extrahieren.
+
+Beispiel:
+
+Wenn eine Seite enthält:
+
+1.5 Zimmer
+Hauptstrasse 9
+4147 Aesch
+CHF 1'300
+
+und
+
+2.5 Zimmer
+Eichbergweg 47
+4147 Aesch
+CHF 1'700
+
+dann gib ZWEI Wohnungen zurück.
+
+NIEMALS Daten verschiedener Wohnungen vermischen.
+
+Antworte ausschließlich mit gültigem JSON:
 
 {{
   "wohnungen": [
     {{
       "treffer_id": 1,
-      "ist_konkretes_inserat": true,
       "titel": null,
       "strasse": null,
       "ort": null,
       "zimmer": null,
+
+      "angegebene_miete": null,
+      "mietpreis_art": null,
+
       "nettomiete": null,
       "nebenkosten": null,
       "bruttomiete_ohne_parkplatz": null,
       "parkplatz_kosten": null,
+
       "nicht_erdgeschoss": null,
       "balkon": null,
       "modern": null,
@@ -356,79 +363,127 @@ in dieser Form:
       "parkplatz": null,
       "begehbare_dusche": null,
       "badewanne": null,
-      "gute_oev": null
+      "gute_oev": null,
+
+      "einzelwohnung_sicher": true
     }}
   ]
 }}
 
 REGELN:
 
-ist_konkretes_inserat:
-Nur true, wenn der Treffer EIN bestimmtes Mietobjekt
-beschreibt.
+1. Jede zurückgegebene Zeile muss genau EINE
+   konkrete Wohnung darstellen.
 
-Eine Seite wie
-"75 Wohnungen mieten in Aesch"
-ist KEIN konkretes Inserat.
+2. Wenn eine Suchseite mehrere Wohnungen enthält,
+   erzeuge mehrere Einträge.
 
-strasse:
-Nur Strasse und Hausnummer.
-Beispiel:
-"Eichbergweg 47"
+3. Keine Angaben zwischen Wohnungen vermischen.
 
-ort:
-Möglichst PLZ + Gemeinde.
-Beispiel:
-"4147 Aesch BL"
+4. Wenn nicht klar ist, welche Adresse, Zimmerzahl
+   und welcher Preis zusammengehören, diese Wohnung
+   NICHT zurückgeben.
 
-zimmer:
-Nur Zimmerzahl der konkreten Wohnung.
+5. strasse:
+   Nur Strasse und Hausnummer.
 
-PREIS:
+   Beispiel:
+   "Eichbergweg 47"
 
-Wenn eine Bruttomiete inklusive Nebenkosten genannt
-wird, schreibe sie in:
+6. ort:
+   PLZ und Gemeinde, wenn vorhanden.
 
-bruttomiete_ohne_parkplatz
+   Beispiel:
+   "4147 Aesch BL"
 
-Wenn Nettomiete und Nebenkosten getrennt genannt
-werden, schreibe sie getrennt in:
+7. zimmer:
+   Nur die Zimmerzahl der konkreten Wohnung.
 
-nettomiete
-nebenkosten
+8. angegebene_miete:
+   Der im Inserat sichtbar angegebene monatliche
+   Mietpreis.
 
-Parkplatzkosten ausschließlich in:
+   Beispiel:
+   1700
 
-parkplatz_kosten
+9. mietpreis_art:
+   Verwende genau einen dieser Werte:
 
-Fehlende Preise niemals mit 0 ersetzen.
+   "netto"
+   "brutto"
+   "inkl_nebenkosten"
+   "unbekannt"
 
-JA/NEIN-FELDER:
+10. Wenn klar ist, dass der Preis Nettomiete ist:
+    nettomiete = Preis
 
-true = eindeutig bestätigt
-false = eindeutig verneint
-null = unbekannt
+11. Wenn klar ist, dass der Preis bereits
+    Nebenkosten enthält:
+    bruttomiete_ohne_parkplatz = Preis
 
-nicht_erdgeschoss:
-true bei 1., 2., 3. Stock usw.
-false bei Erdgeschoss.
+12. Wenn Nebenkosten separat genannt sind:
+    nebenkosten = Betrag
 
-begehbare_dusche:
-true nur bei ausdrücklich begehbarer,
-bodenebener oder Walk-in-Dusche.
+13. Wenn Parkplatzkosten separat genannt sind:
+    parkplatz_kosten = Betrag
 
-modern:
-true bei ausdrücklich modernem,
-renoviertem, saniertem oder neuwertigem Ausbau.
+14. Fehlende Geldbeträge niemals als 0 eintragen.
 
-ruhig:
-true nur bei ausdrücklich ruhiger Lage.
+15. Nicht annehmen, dass ein sichtbarer Preis
+    Nebenkosten oder Parkplatz enthält.
 
-gute_oev:
-true bei ausdrücklich guter ÖV-Anbindung
-oder nahe gelegener Bus-, Tram- oder Bahnhaltestelle.
+16. einzelwohnung_sicher:
+    Nur true, wenn mindestens die Wohnung als
+    einzelnes Objekt eindeutig erkennbar ist.
 
-SUCHTREFFER:
+17. Bei Ja/Nein-Feldern:
+
+    true = eindeutig bestätigt
+    false = eindeutig verneint
+    null = unbekannt
+
+18. nicht_erdgeschoss:
+    true bei 1., 2., 3. Stock usw.
+    false bei Erdgeschoss.
+
+19. balkon:
+    true bei ausdrücklich Balkon oder Terrasse.
+
+20. modern:
+    true bei modern, renoviert, saniert,
+    neuwertig oder hochwertigem Ausbau.
+
+21. ruhig:
+    true nur wenn ruhige Lage ausdrücklich
+    erwähnt wird.
+
+22. parkplatz:
+    true wenn Parkplatz, Einstellplatz,
+    Garage oder Autoabstellplatz angeboten wird.
+
+23. begehbare_dusche:
+    true nur bei begehbarer, bodenebener oder
+    Walk-in-Dusche.
+
+24. badewanne:
+    true wenn Badewanne vorhanden.
+    false nur wenn ausdrücklich keine vorhanden ist.
+
+25. gute_oev:
+    true bei ausdrücklich guter ÖV-Anbindung
+    oder nahe gelegener Bus-, Tram- oder
+    Bahnhaltestelle.
+
+26. Der Titel einer Übersichtsseite wie
+    "75 Wohnungen mieten in Aesch"
+    darf NIEMALS als Titel einer einzelnen
+    Wohnung übernommen werden.
+
+27. Für den Titel einer einzelnen Wohnung
+    verwende, falls vorhanden, den individuellen
+    Inserattitel. Sonst null.
+
+WEBTREFFER:
 
 {daten_text}
 """
@@ -454,12 +509,11 @@ SUCHTREFFER:
 
 
 # =========================================================
-# PREIS
+# PREISE
 # =========================================================
 
-def gesamtpreis_berechnen(
+def bekannte_wohnkosten(
     analyse,
-    parkplatz_gewuenscht,
 ):
     brutto = sichere_float_zahl(
         analyse.get(
@@ -475,29 +529,57 @@ def gesamtpreis_berechnen(
         analyse.get("nebenkosten")
     )
 
-    park = sichere_float_zahl(
-        analyse.get("parkplatz_kosten")
+    angegeben = sichere_float_zahl(
+        analyse.get("angegebene_miete")
+    )
+
+    mietpreis_art = analyse.get(
+        "mietpreis_art"
     )
 
     if brutto is not None:
-        basis = brutto
+        return brutto
 
-    elif (
+    if (
         netto is not None
         and nk is not None
     ):
-        basis = netto + nk
+        return netto + nk
 
-    else:
+    if (
+        angegeben is not None
+        and mietpreis_art
+        in ["brutto", "inkl_nebenkosten"]
+    ):
+        return angegeben
+
+    return None
+
+
+def gesamtpreis_berechnen(
+    analyse,
+    parkplatz_gewuenscht,
+):
+    wohnkosten = bekannte_wohnkosten(
+        analyse
+    )
+
+    if wohnkosten is None:
         return None
 
     if parkplatz_gewuenscht:
+        park = sichere_float_zahl(
+            analyse.get(
+                "parkplatz_kosten"
+            )
+        )
+
         if park is None:
             return None
 
-        return basis + park
+        return wohnkosten + park
 
-    return basis
+    return wohnkosten
 
 
 # =========================================================
@@ -533,21 +615,41 @@ def bewerte_wohnung(
         parkplatz,
     )
 
+    angegebene_miete = sichere_float_zahl(
+        analyse.get("angegebene_miete")
+    )
+
     zimmer = sichere_float_zahl(
         analyse.get("zimmer")
     )
 
-    # PREIS = 3 Punkte
+    # -----------------------------------------
+    # PREIS
+    # -----------------------------------------
+
     gesamt_wunschpunkte += 3
 
     if gesamtpreis is None:
-        details.append(
-            (
-                "❓",
-                "Gesamtpreis",
-                "nicht vollständig bekannt",
+        if angegebene_miete is not None:
+            details.append(
+                (
+                    "❓",
+                    "Gesamtpreis",
+                    (
+                        f"angegebene Miete "
+                        f"CHF {angegebene_miete:,.0f}; "
+                        "NK/Parkplatz noch nicht vollständig bekannt"
+                    ),
+                )
             )
-        )
+        else:
+            details.append(
+                (
+                    "❓",
+                    "Gesamtpreis",
+                    "noch nicht bekannt",
+                )
+            )
 
     else:
         beurteilbar += 3
@@ -569,11 +671,17 @@ def bewerte_wohnung(
                 (
                     "❌",
                     "Gesamtpreis",
-                    f"CHF {gesamtpreis:,.0f} – über Budget",
+                    (
+                        f"CHF {gesamtpreis:,.0f} "
+                        "– über Budget"
+                    ),
                 )
             )
 
-    # ZIMMER = 2 Punkte
+    # -----------------------------------------
+    # ZIMMER
+    # -----------------------------------------
+
     gesamt_wunschpunkte += 2
 
     if zimmer is None:
@@ -612,6 +720,10 @@ def bewerte_wohnung(
                     f"{zimmer:g}",
                 )
             )
+
+    # -----------------------------------------
+    # WEITERE KRITERIEN
+    # -----------------------------------------
 
     pruefungen = [
         (
@@ -722,7 +834,10 @@ def bewerte_wohnung(
                 )
             )
 
+    # -----------------------------------------
     # STEUER
+    # -----------------------------------------
+
     steuer_info = steuervergleich(
         analyse.get("ort"),
         suchorte,
@@ -776,6 +891,10 @@ def bewerte_wohnung(
                     )
                 )
 
+    # -----------------------------------------
+    # PROZENTE
+    # -----------------------------------------
+
     if beurteilbar:
         match = round(
             punkte / beurteilbar * 100
@@ -810,8 +929,18 @@ def bewerte_wohnung(
         and zimmer is not None
     )
 
-    if not kerndaten_vollstaendig:
+    if zimmer is None:
         status = "unvollständig"
+
+    elif not (
+        min_zimmer
+        <= zimmer
+        <= max_zimmer
+    ):
+        status = "Zimmer ausserhalb"
+
+    elif gesamtpreis is None:
+        status = "Preis offen"
 
     elif gesamtpreis > max_miete:
         status = "über Budget"
@@ -827,6 +956,9 @@ def bewerte_wohnung(
 
     return {
         "gesamtpreis": gesamtpreis,
+        "angegebene_miete": (
+            angegebene_miete
+        ),
         "steuerfuss": steuerfuss,
         "match": match,
         "bestaetigt": bestaetigt,
@@ -960,8 +1092,15 @@ with col2:
     min_zimmer = st.selectbox(
         "Mindestens Zimmer",
         [
-            1.0, 1.5, 2.0, 2.5,
-            3.0, 3.5, 4.0, 4.5, 5.0,
+            1.0,
+            1.5,
+            2.0,
+            2.5,
+            3.0,
+            3.5,
+            4.0,
+            4.5,
+            5.0,
         ],
         index=3,
     )
@@ -970,9 +1109,16 @@ with col3:
     max_zimmer = st.selectbox(
         "Maximal Zimmer",
         [
-            1.5, 2.0, 2.5, 3.0,
-            3.5, 4.0, 4.5, 5.0,
-            5.5, 6.0,
+            1.5,
+            2.0,
+            2.5,
+            3.0,
+            3.5,
+            4.0,
+            4.5,
+            5.0,
+            5.5,
+            6.0,
         ],
         index=4,
     )
@@ -1050,9 +1196,9 @@ if weitere_orte.strip():
 st.subheader("🔎 Wohnungen automatisch suchen")
 
 st.caption(
-    "Eine schnelle gemeinsame Websuche für alle "
-    "ausgewählten Orte. Danach prüft die KI nur "
-    "die relevanten Treffer."
+    "Der Agent durchsucht aktuelle Immobilienseiten "
+    "und kann auch einzelne Wohnungen aus "
+    "Trefferlisten herauslesen."
 )
 
 
@@ -1074,7 +1220,7 @@ if st.button(
 
         try:
             statusfeld.write(
-                "🔎 Suche aktuelle Wohnungsinserate ..."
+                "🔎 Suche aktuelle Wohnungen ..."
             )
 
             ort_text = " OR ".join(
@@ -1087,21 +1233,20 @@ if st.button(
                 f"({ort_text}) "
                 f"{min_zimmer:g} bis "
                 f"{max_zimmer:g} Zimmer "
-                f"CHF {max_miete} "
-                f"Adresse Balkon Parkplatz"
+                f"Miete CHF "
+                f"Balkon Parkplatz"
             )
 
+            # Nur ein Tavily-Aufruf
             treffer = tavily_suche(
                 suchtext,
                 max_results=15,
             )
 
-            fortschritt.progress(40)
+            fortschritt.progress(45)
 
-            # -----------------------------------------
-            # DUPLIKATE + TREFFERLISTEN ENTFERNEN
-            # -----------------------------------------
-
+            # Duplikate entfernen,
+            # aber Suchseiten NICHT mehr löschen.
             gefiltert = []
             urls = set()
 
@@ -1111,28 +1256,16 @@ if st.button(
                     "",
                 )
 
-                titel = item.get(
-                    "title",
-                    "",
-                )
-
                 if not url:
                     continue
 
                 if url in urls:
                     continue
 
-                if ist_offensichtliche_trefferliste(
-                    titel,
-                    url,
-                ):
-                    continue
-
                 urls.add(url)
-
                 gefiltert.append(item)
 
-            # Maximal 12 KI-relevante Treffer
+            # Geschwindigkeit/Kosten begrenzen
             gefiltert = gefiltert[:12]
 
             if not gefiltert:
@@ -1140,29 +1273,30 @@ if st.button(
                 statusfeld.empty()
 
                 st.warning(
-                    "Keine konkreten Wohnungsinserate "
-                    "gefunden."
+                    "Keine Suchtreffer gefunden."
                 )
 
             else:
                 statusfeld.write(
-                    f"🤖 KI prüft {len(gefiltert)} "
-                    "Suchtreffer gemeinsam ..."
+                    "🤖 KI liest die gefundenen "
+                    "Wohnungsseiten ..."
                 )
 
                 fortschritt.progress(60)
 
-                analysen = ki_analysiere_alle_treffer(
+                # Nur EIN OpenAI-Aufruf
+                analysen = ki_extrahiere_wohnungen(
                     gefiltert
                 )
 
                 fortschritt.progress(85)
 
                 ergebnisse = []
+                bekannte_wohnungen = set()
 
                 for analyse in analysen:
                     if not analyse.get(
-                        "ist_konkretes_inserat",
+                        "einzelwohnung_sicher",
                         False,
                     ):
                         continue
@@ -1175,16 +1309,40 @@ if st.button(
                         treffer_id = int(
                             treffer_id
                         )
+
                     except Exception:
                         continue
 
                     if (
                         treffer_id < 1
-                        or treffer_id > len(
-                            gefiltert
-                        )
+                        or treffer_id
+                        > len(gefiltert)
                     ):
                         continue
+
+                    # Eine Wohnung muss mindestens
+                    # Adresse/Ort und Zimmerzahl haben.
+                    if (
+                        not analyse.get("strasse")
+                        and not analyse.get("ort")
+                    ):
+                        continue
+
+                    if sichere_float_zahl(
+                        analyse.get("zimmer")
+                    ) is None:
+                        continue
+
+                    schluessel = wohnungs_schluessel(
+                        analyse
+                    )
+
+                    if schluessel in bekannte_wohnungen:
+                        continue
+
+                    bekannte_wohnungen.add(
+                        schluessel
+                    )
 
                     original = gefiltert[
                         treffer_id - 1
@@ -1224,12 +1382,21 @@ if st.button(
                             "zimmer": sichere_float_zahl(
                                 analyse.get("zimmer")
                             ),
-                            "gesamtpreis": bewertung[
-                                "gesamtpreis"
-                            ],
-                            "steuerfuss": bewertung[
-                                "steuerfuss"
-                            ],
+                            "angegebene_miete": (
+                                bewertung[
+                                    "angegebene_miete"
+                                ]
+                            ),
+                            "gesamtpreis": (
+                                bewertung[
+                                    "gesamtpreis"
+                                ]
+                            ),
+                            "steuerfuss": (
+                                bewertung[
+                                    "steuerfuss"
+                                ]
+                            ),
                             "match": bewertung[
                                 "match"
                             ],
@@ -1262,21 +1429,34 @@ if st.button(
                         }
                     )
 
-                ergebnisse.sort(
-                    key=lambda x: (
-                        x.get(
-                            "kerndaten_vollstaendig",
-                            False,
-                        ),
+                # Zuerst Wohnungen innerhalb
+                # des gewünschten Zimmerbereichs.
+                def sortierwert(x):
+                    zimmer = x.get("zimmer")
+
+                    zimmer_passend = (
+                        zimmer is not None
+                        and min_zimmer
+                        <= zimmer
+                        <= max_zimmer
+                    )
+
+                    preis_bekannt = (
+                        x.get("gesamtpreis")
+                        is not None
+                    )
+
+                    return (
+                        zimmer_passend,
+                        preis_bekannt,
                         x.get(
                             "bestaetigt",
                             0,
                         ),
-                        x.get(
-                            "match",
-                            0,
-                        ),
-                    ),
+                    )
+
+                ergebnisse.sort(
+                    key=sortierwert,
                     reverse=True,
                 )
 
@@ -1290,14 +1470,16 @@ if st.button(
 
                 if ergebnisse:
                     st.success(
-                        f"✅ {len(ergebnisse)} konkrete "
-                        "Wohnung(en) gefunden und geprüft."
+                        f"✅ {len(ergebnisse)} einzelne "
+                        "Wohnung(en) gefunden."
                     )
+
                 else:
                     st.warning(
-                        "Die Suche lieferte Treffer, "
-                        "aber keine eindeutigen einzelnen "
-                        "Wohnungsinserate."
+                        "Suchseiten wurden gefunden, "
+                        "aber daraus konnten keine "
+                        "eindeutigen einzelnen Wohnungen "
+                        "ausgelesen werden."
                     )
 
         except requests.HTTPError as e:
@@ -1349,13 +1531,21 @@ else:
             "unvollständig",
         )
 
-        if status == "unvollständig":
+        if status == "Preis offen":
             symbol = "⚪"
-            status_text = "Daten unvollständig"
+            status_text = "Preis noch offen"
+
+        elif status == "Zimmer ausserhalb":
+            symbol = "🔴"
+            status_text = "Zimmer ausserhalb"
 
         elif status == "über Budget":
             symbol = "🔴"
             status_text = "Über Budget"
+
+        elif status == "unvollständig":
+            symbol = "⚪"
+            status_text = "Daten unvollständig"
 
         elif match >= 85:
             symbol = "🟢"
@@ -1375,18 +1565,9 @@ else:
         )
 
         if not adresse:
-            adresse = (
-                wohnung.get("titel")
-                or "Adresse unbekannt"
-            )
+            adresse = "Adresse unbekannt"
 
-        zimmer = wohnung.get(
-            "zimmer"
-        )
-
-        preis = wohnung.get(
-            "gesamtpreis"
-        )
+        zimmer = wohnung.get("zimmer")
 
         zimmer_text = (
             f"{zimmer:g} Zimmer"
@@ -1394,14 +1575,28 @@ else:
             else "Zimmer ❓"
         )
 
-        preis_text = (
-            f"CHF {preis:,.0f}"
-            if preis is not None
-            else "Preis ❓"
+        gesamtpreis = wohnung.get(
+            "gesamtpreis"
         )
 
-        # Saubere Kopfzeile:
-        # 1. Eichbergweg 47, Aesch – 2.5 Zimmer – CHF 1'700
+        angegebene_miete = wohnung.get(
+            "angegebene_miete"
+        )
+
+        if gesamtpreis is not None:
+            preis_text = (
+                f"Gesamt CHF "
+                f"{gesamtpreis:,.0f}"
+            )
+
+        elif angegebene_miete is not None:
+            preis_text = (
+                f"Miete CHF "
+                f"{angegebene_miete:,.0f} + offene Kosten"
+            )
+
+        else:
+            preis_text = "Preis ❓"
 
         kopf = (
             f"{symbol} {nummer}. "
@@ -1424,18 +1619,18 @@ else:
                 else:
                     st.metric(
                         "Match",
-                        "unvollständig",
+                        "noch offen",
                     )
 
             with col2:
                 st.metric(
-                    "Wunschliste bestätigt",
+                    "Bestätigt",
                     f"{wohnung.get('bestaetigt', 0)}%",
                 )
 
             with col3:
                 st.metric(
-                    "Noch offen",
+                    "Offene Punkte",
                     wohnung.get(
                         "offen",
                         0,
@@ -1462,26 +1657,25 @@ else:
                 st.write(
                     f"**Zimmer:** {zimmer:g}"
                 )
-            else:
+
+            if angegebene_miete is not None:
                 st.write(
-                    "**Zimmer:** ❓ unbekannt"
+                    "**Im Inserat angegebene Miete:** "
+                    f"CHF {angegebene_miete:,.0f}"
                 )
 
-            if preis is not None:
+            if gesamtpreis is not None:
                 st.write(
-                    "**Gesamtpreis inkl. NK + Parkplatz:** "
-                    f"CHF {preis:,.0f}"
+                    "**Gesamtpreis inkl. bekannten "
+                    "NK + Parkplatz:** "
+                    f"CHF {gesamtpreis:,.0f}"
                 )
 
-                if preis > max_miete:
-                    st.error(
-                        f"Budget von CHF "
-                        f"{max_miete:,.0f} überschritten."
-                    )
             else:
                 st.warning(
-                    "Gesamtpreis inkl. Nebenkosten "
-                    "und Parkplatz noch unbekannt."
+                    "Der endgültige Gesamtpreis inkl. "
+                    "Nebenkosten und Parkplatz ist noch "
+                    "nicht vollständig bekannt."
                 )
 
             if wohnung.get(
@@ -1513,7 +1707,7 @@ else:
                 )
 
             st.link_button(
-                "🏠 Originalinserat öffnen",
+                "🏠 Quelle / Inserat öffnen",
                 wohnung["url"],
             )
 
@@ -1523,8 +1717,14 @@ else:
                 use_container_width=True,
             ):
                 vorhanden = any(
-                    x.get("url")
-                    == wohnung.get("url")
+                    (
+                        x.get("strasse")
+                        == wohnung.get("strasse")
+                        and x.get("ort")
+                        == wohnung.get("ort")
+                        and x.get("zimmer")
+                        == wohnung.get("zimmer")
+                    )
                     for x in
                     st.session_state.merkliste
                 )
@@ -1549,6 +1749,11 @@ else:
                             ),
                             "zimmer": wohnung.get(
                                 "zimmer"
+                            ),
+                            "angegebene_miete": (
+                                wohnung.get(
+                                    "angegebene_miete"
+                                )
                             ),
                             "gesamtpreis": wohnung.get(
                                 "gesamtpreis"
@@ -1664,8 +1869,12 @@ else:
         wohnungen_sortiert,
         start=1,
     ):
-        preis = wohnung.get(
+        gesamtpreis = wohnung.get(
             "gesamtpreis"
+        )
+
+        angegebene_miete = wohnung.get(
+            "angegebene_miete"
         )
 
         zimmer = wohnung.get(
@@ -1675,6 +1884,19 @@ else:
         steuerwert = wohnung.get(
             "steuerfuss"
         )
+
+        if gesamtpreis is not None:
+            preis_text = (
+                f"CHF {gesamtpreis:,.0f}"
+            )
+
+        elif angegebene_miete is not None:
+            preis_text = (
+                f"CHF {angegebene_miete:,.0f} + ?"
+            )
+
+        else:
+            preis_text = "❓"
 
         tabellen_daten.append(
             {
@@ -1692,11 +1914,7 @@ else:
                     if zimmer is not None
                     else "❓"
                 ),
-                "Gesamtpreis": (
-                    f"CHF {preis:,.0f}"
-                    if preis is not None
-                    else "❓ Unbekannt"
-                ),
+                "Preis": preis_text,
                 "Steuerfuss": (
                     f"{steuerwert:g} %"
                     if steuerwert is not None
@@ -1764,21 +1982,32 @@ else:
                 )
 
             if wohnung.get(
+                "angegebene_miete"
+            ) is not None:
+                st.write(
+                    "**Angegebene Miete:** "
+                    f"CHF "
+                    f"{wohnung['angegebene_miete']:,.0f}"
+                )
+
+            if wohnung.get(
                 "gesamtpreis"
             ) is not None:
                 st.write(
-                    f"**Gesamtpreis:** "
+                    "**Gesamtpreis:** "
                     f"CHF "
                     f"{wohnung['gesamtpreis']:,.0f}"
                 )
+
             else:
                 st.write(
-                    "**Gesamtpreis:** ❓ unbekannt"
+                    "**Gesamtpreis:** ❓ "
+                    "noch nicht vollständig bekannt"
                 )
 
             if wohnung.get("url"):
                 st.link_button(
-                    "🏠 Originalinserat öffnen",
+                    "🏠 Quelle / Inserat öffnen",
                     wohnung["url"],
                     key=f"link_{nummer}",
                 )
@@ -1806,7 +2035,7 @@ st.divider()
 
 st.caption(
     "Wohnungs-Finder Schweiz – automatische Websuche "
-    "mit Tavily und KI-Auswertung. Angaben und "
-    "Verfügbarkeit immer im Originalinserat überprüfen. "
-    "Steuerfüsse BL: Stand 2026."
+    "mit Tavily und KI-Auswertung. Preise, Nebenkosten, "
+    "Parkplatzkosten und Verfügbarkeit immer im "
+    "Originalinserat überprüfen. Steuerfüsse BL: Stand 2026."
 )
