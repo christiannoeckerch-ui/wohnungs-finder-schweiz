@@ -24,6 +24,26 @@ st.divider()
 
 
 # =========================================================
+# STEUERFÜSSE BL 2026
+# Quelle: Amt für Daten und Statistik Basel-Landschaft
+# Natürliche Personen: Einkommen/Vermögen in % Staatssteuer
+# =========================================================
+
+STEUERFUESSE_BL_2026 = {
+    "Aesch": 56.0,
+    "Allschwil": 58.0,
+    "Arlesheim": 47.0,
+    "Binningen": 49.0,
+    "Frenkendorf": 57.0,
+    "Liestal": 65.0,
+    "Münchenstein": 60.0,
+    "Muttenz": 56.0,
+    "Pratteln": 58.5,
+    "Reinach": 58.5,
+}
+
+
+# =========================================================
 # HILFSFUNKTIONEN
 # =========================================================
 
@@ -139,7 +159,6 @@ Bus-, Tram- oder Bahnhaltestellen erwähnt werden.
 
 Geldbeträge nur als Zahlen in CHF zurückgeben.
 
-WICHTIG:
 Fehlende Kosten niemals mit 0 ersetzen.
 Wenn Nettomiete, Nebenkosten oder Parkplatzkosten
 nicht angegeben sind, verwende null.
@@ -215,15 +234,136 @@ def pruefen(
     return wert == "Ja"
 
 
+def geld_lesen(text):
+    text = text.strip()
+
+    if not text:
+        return None
+
+    try:
+        text = (
+            text
+            .replace("CHF", "")
+            .replace("'", "")
+            .replace("’", "")
+            .replace(" ", "")
+            .replace(",", ".")
+        )
+
+        return float(text)
+
+    except ValueError:
+        return None
+
+
+def gemeinde_aus_text(text):
+    """
+    Erkennt eine BL-Gemeinde aus einem von der KI
+    zurückgegebenen Ort oder einer Adresse.
+    """
+
+    if not text:
+        return None
+
+    text_klein = str(text).lower()
+
+    for gemeinde in STEUERFUESSE_BL_2026:
+        if gemeinde.lower() in text_klein:
+            return gemeinde
+
+    return None
+
+
+def suchgemeinde_normalisieren(text):
+    """
+    Wandelt z.B. 'Reinach BL' in 'Reinach' um.
+    """
+
+    text = text.strip()
+
+    if text.endswith(" BL"):
+        text = text[:-3]
+
+    return text.strip()
+
+
+def steuervergleich(
+    wohnort,
+    suchorte,
+):
+    """
+    Vergleicht den Steuerfuss der Wohnung mit den
+    ausgewählten BL-Suchgemeinden.
+    """
+
+    gemeinde = gemeinde_aus_text(
+        wohnort
+    )
+
+    if gemeinde is None:
+        return None
+
+    steuerfuss = STEUERFUESSE_BL_2026.get(
+        gemeinde
+    )
+
+    if steuerfuss is None:
+        return None
+
+    vergleichswerte = []
+
+    for ort_name in suchorte:
+        normalisiert = suchgemeinde_normalisieren(
+            ort_name
+        )
+
+        if normalisiert in STEUERFUESSE_BL_2026:
+            vergleichswerte.append(
+                STEUERFUESSE_BL_2026[
+                    normalisiert
+                ]
+            )
+
+    if not vergleichswerte:
+        return {
+            "gemeinde": gemeinde,
+            "steuerfuss": steuerfuss,
+            "vergleich": "kein Vergleich verfügbar",
+            "guenstig": None,
+        }
+
+    durchschnitt = (
+        sum(vergleichswerte)
+        / len(vergleichswerte)
+    )
+
+    if steuerfuss < durchschnitt - 1:
+        vergleich = "eher tiefer"
+        guenstig = True
+
+    elif steuerfuss > durchschnitt + 1:
+        vergleich = "eher höher"
+        guenstig = False
+
+    else:
+        vergleich = "mittlerer Bereich"
+        guenstig = True
+
+    return {
+        "gemeinde": gemeinde,
+        "steuerfuss": steuerfuss,
+        "vergleich": vergleich,
+        "durchschnitt": durchschnitt,
+        "guenstig": guenstig,
+    }
+
+
 # =========================================================
 # SESSION STATE
 # =========================================================
 
 if "analyse" not in st.session_state:
     st.session_state.analyse = {}
-
-if "letzte_quelle" not in st.session_state:
-    st.session_state.letzte_quelle = ""
 
 
 # =========================================================
@@ -243,7 +383,6 @@ standard_gemeinden = [
     "Arlesheim",
     "Binningen",
     "Allschwil",
-    "Basel",
 ]
 
 gemeinden = st.multiselect(
@@ -279,15 +418,8 @@ with col2:
     min_zimmer = st.selectbox(
         "Mindestens Zimmer",
         [
-            1.0,
-            1.5,
-            2.0,
-            2.5,
-            3.0,
-            3.5,
-            4.0,
-            4.5,
-            5.0,
+            1.0, 1.5, 2.0, 2.5, 3.0,
+            3.5, 4.0, 4.5, 5.0,
         ],
         index=3,
     )
@@ -296,16 +428,8 @@ with col3:
     max_zimmer = st.selectbox(
         "Maximal Zimmer",
         [
-            1.5,
-            2.0,
-            2.5,
-            3.0,
-            3.5,
-            4.0,
-            4.5,
-            5.0,
-            5.5,
-            6.0,
+            1.5, 2.0, 2.5, 3.0, 3.5,
+            4.0, 4.5, 5.0, 5.5, 6.0,
         ],
         index=4,
     )
@@ -363,11 +487,6 @@ steuer = st.checkbox(
     True,
 )
 
-st.caption(
-    "Alle Einstellungen können für andere Personen "
-    "und Regionen geändert werden."
-)
-
 
 # =========================================================
 # 2. WOHNUNGEN SUCHEN
@@ -384,7 +503,6 @@ if weitere_orte.strip():
         for x in weitere_orte.split(",")
         if x.strip()
     ]
-
 
 if alle_orte:
 
@@ -424,12 +542,6 @@ if alle_orte:
             use_container_width=True,
         )
 
-else:
-
-    st.warning(
-        "Bitte mindestens einen Suchort auswählen."
-    )
-
 
 # =========================================================
 # 3. INSERAT ANALYSIEREN
@@ -438,18 +550,10 @@ else:
 st.divider()
 st.header("🤖 3. Inserat mit KI prüfen")
 
-st.write(
-    "Am zuverlässigsten funktioniert die Analyse, wenn du "
-    "den Text des Inserats einfügst. Den Link zum "
-    "Originalinserat kannst du zusätzlich speichern."
-)
-
-
 inserat_url = st.text_input(
     "Link zum Originalinserat (optional)",
     placeholder="https://...",
 )
-
 
 inserat_text_manuell = st.text_area(
     "Inserattext einfügen",
@@ -459,7 +563,6 @@ inserat_text_manuell = st.text_area(
         "weitere Angaben kopieren und hier einfügen."
     ),
 )
-
 
 st.caption(
     "Am besten den ganzen relevanten Inserattext inklusive "
@@ -474,7 +577,6 @@ if st.button(
 ):
 
     text_fuer_analyse = ""
-    quelle = ""
 
     if len(
         inserat_text_manuell.strip()
@@ -484,42 +586,20 @@ if st.button(
             inserat_text_manuell.strip()
         )
 
-        quelle = "eingefügter Inserattext"
-
     elif inserat_url.strip():
 
         try:
-
-            with st.spinner(
-                "Versuche Inserat von der Webseite zu laden..."
-            ):
-
-                geladener_text = lade_inserat(
-                    inserat_url.strip()
-                )
-
-            if len(geladener_text) >= 200:
-
-                text_fuer_analyse = geladener_text
-                quelle = "Webseite"
-
-        except requests.exceptions.RequestException:
-
-            st.warning(
-                "Das Portal blockiert den automatischen "
-                "Zugriff. Bitte den Inserattext kopieren "
-                "und oben einfügen."
+            text_fuer_analyse = lade_inserat(
+                inserat_url.strip()
             )
 
         except Exception:
-
             st.warning(
-                "Das Inserat konnte nicht direkt gelesen "
-                "werden. Bitte den Inserattext einfügen."
+                "Das Portal blockiert den automatischen "
+                "Zugriff. Bitte den Inserattext kopieren."
             )
 
     else:
-
         st.warning(
             "Bitte Inserattext oder Inserat-Link angeben."
         )
@@ -538,25 +618,9 @@ if st.button(
                 )
 
                 st.session_state.analyse = analyse
-                st.session_state.letzte_quelle = quelle
 
             st.success(
-                f"✅ Inserat erfolgreich analysiert "
-                f"({quelle})."
-            )
-
-        except KeyError:
-
-            st.error(
-                "Der OpenAI API-Key wurde in den "
-                "Streamlit Secrets nicht gefunden."
-            )
-
-        except json.JSONDecodeError:
-
-            st.error(
-                "Die KI-Antwort konnte nicht korrekt "
-                "ausgewertet werden. Bitte nochmals versuchen."
+                "✅ Inserat erfolgreich analysiert."
             )
 
         except Exception as e:
@@ -577,14 +641,12 @@ st.divider()
 st.header("📝 4. Erkannte Angaben prüfen")
 
 if analyse:
-
     st.success(
         "Die KI hat Angaben erkannt. Bitte kurz mit "
         "dem Originalinserat vergleichen."
     )
 
 else:
-
     st.info(
         "Noch kein Inserat analysiert."
     )
@@ -593,7 +655,6 @@ else:
 col1, col2, col3 = st.columns(3)
 
 with col1:
-
     titel = st.text_input(
         "Wohnung / Titel",
         value=str(
@@ -602,7 +663,6 @@ with col1:
     )
 
 with col2:
-
     ort = st.text_input(
         "Ort",
         value=str(
@@ -611,7 +671,6 @@ with col2:
     )
 
 with col3:
-
     zimmer = st.number_input(
         "Zimmer",
         min_value=1.0,
@@ -630,23 +689,13 @@ with col3:
 
 st.subheader("💰 Kosten")
 
-netto_erkannt = analyse.get(
-    "nettomiete"
-)
-
-nk_erkannt = analyse.get(
-    "nebenkosten"
-)
-
-park_erkannt = analyse.get(
-    "parkplatz_kosten"
-)
-
+netto_erkannt = analyse.get("nettomiete")
+nk_erkannt = analyse.get("nebenkosten")
+park_erkannt = analyse.get("parkplatz_kosten")
 
 col1, col2, col3 = st.columns(3)
 
 with col1:
-
     nettomiete_text = st.text_input(
         "Nettomiete CHF",
         value=(
@@ -658,7 +707,6 @@ with col1:
     )
 
 with col2:
-
     nebenkosten_text = st.text_input(
         "Nebenkosten CHF",
         value=(
@@ -670,7 +718,6 @@ with col2:
     )
 
 with col3:
-
     parkplatz_text = st.text_input(
         "Parkplatz CHF",
         value=(
@@ -680,28 +727,6 @@ with col3:
         ),
         placeholder="unbekannt",
     )
-
-
-def geld_lesen(text):
-    text = text.strip()
-
-    if not text:
-        return None
-
-    try:
-        text = (
-            text
-            .replace("CHF", "")
-            .replace("'", "")
-            .replace("’", "")
-            .replace(" ", "")
-            .replace(",", ".")
-        )
-
-        return float(text)
-
-    except ValueError:
-        return None
 
 
 nettomiete = geld_lesen(
@@ -716,8 +741,6 @@ parkplatz_kosten = geld_lesen(
     parkplatz_text
 )
 
-
-# Welche Kosten werden überhaupt benötigt?
 
 kosten_fehlen = []
 
@@ -775,7 +798,6 @@ optionen = [
     "Unbekannt",
 ]
 
-
 st.subheader("🏡 Ausstattung")
 
 col1, col2 = st.columns(2)
@@ -814,7 +836,6 @@ with col1:
         ),
     )
 
-
 with col2:
 
     i_parkplatz = st.selectbox(
@@ -850,16 +871,55 @@ with col2:
     )
 
 
-i_steuer = st.selectbox(
-    "Steuerlich attraktive Gemeinde?",
-    optionen,
-    index=2,
+# =========================================================
+# STEUERFUSS AUTOMATISCH
+# =========================================================
+
+st.subheader("💰 Steuerfuss Gemeinde")
+
+steuer_info = steuervergleich(
+    ort,
+    gemeinden,
 )
 
-st.caption(
-    "Der Steuerfuss wird derzeit noch manuell bewertet. "
-    "Die automatische Gemeindebewertung folgt später."
-)
+if steuer_info:
+
+    st.write(
+        f"**{steuer_info['gemeinde']} BL:** "
+        f"{steuer_info['steuerfuss']:g} % "
+        "der Staatssteuer"
+    )
+
+    if "durchschnitt" in steuer_info:
+
+        st.write(
+            "Vergleich mit den ausgewählten "
+            f"BL-Suchgemeinden: **"
+            f"{steuer_info['vergleich']}**"
+        )
+
+        st.caption(
+            "Durchschnitt der ausgewählten Gemeinden: "
+            f"{steuer_info['durchschnitt']:.1f} %"
+        )
+
+    if steuer_info["guenstig"] is True:
+        i_steuer = "Ja"
+
+    elif steuer_info["guenstig"] is False:
+        i_steuer = "Nein"
+
+    else:
+        i_steuer = "Unbekannt"
+
+else:
+
+    st.info(
+        "Steuerfuss konnte für diese Gemeinde "
+        "nicht automatisch bestimmt werden."
+    )
+
+    i_steuer = "Unbekannt"
 
 
 # =========================================================
@@ -879,13 +939,10 @@ if st.button(
     beurteilbar = 0
     gesamt_wunschpunkte = 0
     bestaetigte_wunschpunkte = 0
-
     details = []
 
 
-    # =====================================================
     # PREIS - GEWICHT 3
-    # =====================================================
 
     gesamt_wunschpunkte += 3
 
@@ -929,9 +986,7 @@ if st.button(
             )
 
 
-    # =====================================================
     # ZIMMER - GEWICHT 2
-    # =====================================================
 
     gesamt_wunschpunkte += 2
     beurteilbar += 2
@@ -959,10 +1014,6 @@ if st.button(
             )
         )
 
-
-    # =====================================================
-    # WEITERE KRITERIEN
-    # =====================================================
 
     pruefungen = [
         (
@@ -1077,10 +1128,6 @@ if st.button(
                 )
 
 
-    # =====================================================
-    # SCORES
-    # =====================================================
-
     if beurteilbar > 0:
 
         match_beurteilbar = round(
@@ -1112,10 +1159,6 @@ if st.button(
     )
 
 
-    # =====================================================
-    # ERGEBNIS
-    # =====================================================
-
     st.divider()
     st.header("📊 Ergebnis")
 
@@ -1145,14 +1188,12 @@ if st.button(
     col1, col2 = st.columns(2)
 
     with col1:
-
         st.metric(
             "Beurteilbarer Match",
             f"{match_beurteilbar}%",
         )
 
     with col2:
-
         st.metric(
             "Gesamte Wunschliste bestätigt",
             f"{bestaetigungsgrad}%",
@@ -1169,35 +1210,36 @@ if st.button(
 
 
     if titel:
-
         st.write(
             f"**Wohnung:** {titel}"
         )
 
-
     if ort:
-
         st.write(
             f"**Ort:** {ort}"
         )
 
-
     if gesamtpreis is not None:
-
         st.write(
             f"**Gesamtpreis:** "
             f"CHF {gesamtpreis:,.0f}"
         )
 
     else:
-
         st.write(
             "**Gesamtpreis:** noch nicht vollständig bekannt"
         )
 
 
-    st.subheader("Kriterien")
+    if steuer_info:
 
+        st.write(
+            f"**Steuerfuss {steuer_info['gemeinde']}:** "
+            f"{steuer_info['steuerfuss']:g} %"
+        )
+
+
+    st.subheader("Kriterien")
 
     for (
         symbol,
@@ -1234,6 +1276,7 @@ if st.button(
 st.divider()
 
 st.caption(
-    "Wohnungs-Finder Schweiz – KI-Angaben immer mit "
-    "dem Originalinserat und dem Mietvertrag überprüfen."
+    "Wohnungs-Finder Schweiz – Steuerfüsse BL: Stand 2026. "
+    "KI-Angaben immer mit dem Originalinserat und dem "
+    "Mietvertrag überprüfen."
 )
