@@ -25,7 +25,6 @@ st.divider()
 
 # =========================================================
 # STEUERFÜSSE BL 2026
-# Quelle: Amt für Daten und Statistik Basel-Landschaft
 # =========================================================
 
 STEUERFUESSE_BL_2026 = {
@@ -72,9 +71,7 @@ def lade_inserat(url):
         "html.parser",
     )
 
-    for element in soup(
-        ["script", "style", "noscript"]
-    ):
+    for element in soup(["script", "style", "noscript"]):
         element.decompose()
 
     text = soup.get_text(
@@ -209,10 +206,7 @@ def index_fuer(wert):
     )
 
 
-def sichere_float_zahl(
-    wert,
-    standard=3.0,
-):
+def sichere_float_zahl(wert, standard=3.0):
     try:
         if wert is None:
             return standard
@@ -223,10 +217,7 @@ def sichere_float_zahl(
         return standard
 
 
-def pruefen(
-    wert,
-    umgekehrt=False,
-):
+def pruefen(wert, umgekehrt=False):
     if wert == "Unbekannt":
         return None
 
@@ -280,10 +271,7 @@ def suchgemeinde_normalisieren(text):
     return text.strip()
 
 
-def steuervergleich(
-    wohnort,
-    suchorte,
-):
+def steuervergleich(wohnort, suchorte):
     gemeinde = gemeinde_aus_text(
         wohnort
     )
@@ -301,25 +289,16 @@ def steuervergleich(
     vergleichswerte = []
 
     for ort_name in suchorte:
-
-        normalisiert = (
-            suchgemeinde_normalisieren(
-                ort_name
-            )
+        normalisiert = suchgemeinde_normalisieren(
+            ort_name
         )
 
-        if (
-            normalisiert
-            in STEUERFUESSE_BL_2026
-        ):
+        if normalisiert in STEUERFUESSE_BL_2026:
             vergleichswerte.append(
-                STEUERFUESSE_BL_2026[
-                    normalisiert
-                ]
+                STEUERFUESSE_BL_2026[normalisiert]
             )
 
     if not vergleichswerte:
-
         return {
             "gemeinde": gemeinde,
             "steuerfuss": steuerfuss,
@@ -354,13 +333,7 @@ def steuervergleich(
 
 
 def merkliste_speichern():
-    """
-    Speichert die aktuelle Merkliste als JSON
-    im Browser.
-    """
-
     try:
-
         daten = json.dumps(
             st.session_state.merkliste,
             ensure_ascii=False,
@@ -369,11 +342,12 @@ def merkliste_speichern():
         localS.setItem(
             MERKLISTE_KEY,
             daten,
-            key="merkliste_speichern",
         )
 
-    except Exception:
-        pass
+    except Exception as e:
+        st.warning(
+            f"Merkliste konnte lokal nicht gespeichert werden: {e}"
+        )
 
 
 # =========================================================
@@ -399,41 +373,34 @@ if "letztes_ergebnis" not in st.session_state:
 
 if not st.session_state.merkliste_geladen:
 
-    gespeicherte_daten = localS.getItem(
-        MERKLISTE_KEY,
-        key="merkliste_laden",
-    )
+    try:
+        gespeicherte_daten = localS.getItem(
+            MERKLISTE_KEY
+        )
 
-    if gespeicherte_daten:
-
-        try:
+        if gespeicherte_daten:
 
             if isinstance(
                 gespeicherte_daten,
                 str,
             ):
-
                 geladene_liste = json.loads(
                     gespeicherte_daten
                 )
 
             else:
-
-                geladene_liste = (
-                    gespeicherte_daten
-                )
+                geladene_liste = gespeicherte_daten
 
             if isinstance(
                 geladene_liste,
                 list,
             ):
-
                 st.session_state.merkliste = (
                     geladene_liste
                 )
 
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     st.session_state.merkliste_geladen = True
 
@@ -478,7 +445,6 @@ weitere_orte = st.text_input(
 col1, col2, col3 = st.columns(3)
 
 with col1:
-
     max_miete = st.number_input(
         "Max. Gesamtpreis inkl. NK + Parkplatz (CHF)",
         min_value=500,
@@ -488,7 +454,6 @@ with col1:
     )
 
 with col2:
-
     min_zimmer = st.selectbox(
         "Mindestens Zimmer",
         [
@@ -506,7 +471,6 @@ with col2:
     )
 
 with col3:
-
     max_zimmer = st.selectbox(
         "Maximal Zimmer",
         [
@@ -530,7 +494,6 @@ st.subheader("Wunschkriterien")
 col1, col2 = st.columns(2)
 
 with col1:
-
     nicht_eg = st.checkbox(
         "Nicht im Erdgeschoss",
         True,
@@ -552,7 +515,6 @@ with col1:
     )
 
 with col2:
-
     parkplatz = st.checkbox(
         "Autoabstellplatz / Parkplatz",
         True,
@@ -579,6 +541,11 @@ steuer = st.checkbox(
     True,
 )
 
+st.caption(
+    "Das Suchprofil kann jederzeit für eine andere "
+    "Person oder Region angepasst werden."
+)
+
 
 # =========================================================
 # 2. INSERAT PRÜFEN
@@ -592,12 +559,10 @@ st.write(
     "und hier einfügen."
 )
 
-
 inserat_url = st.text_input(
     "Link zum Originalinserat (optional)",
     placeholder="https://...",
 )
-
 
 inserat_text_manuell = st.text_area(
     "Inserattext einfügen",
@@ -628,13 +593,11 @@ if st.button(
     elif inserat_url.strip():
 
         try:
-
             text_fuer_analyse = lade_inserat(
                 inserat_url.strip()
             )
 
         except Exception:
-
             st.warning(
                 "Das Immobilienportal blockiert den "
                 "automatischen Zugriff. Bitte den "
@@ -642,7 +605,6 @@ if st.button(
             )
 
     else:
-
         st.warning(
             "Bitte Inserattext oder Inserat-Link angeben."
         )
@@ -651,17 +613,16 @@ if st.button(
     if text_fuer_analyse:
 
         try:
-
             with st.spinner(
                 "KI analysiert das Inserat..."
             ):
 
-                analyse = ki_analyse(
+                analyse_neu = ki_analyse(
                     text_fuer_analyse
                 )
 
                 st.session_state.analyse = (
-                    analyse
+                    analyse_neu
                 )
 
                 st.session_state.letztes_ergebnis = (
@@ -673,7 +634,6 @@ if st.button(
             )
 
         except Exception as e:
-
             st.error(
                 f"KI-Analyse nicht möglich: {e}"
             )
@@ -684,20 +644,16 @@ analyse = st.session_state.analyse
 
 if analyse:
 
-    st.subheader(
-        "📝 Erkannte Angaben"
-    )
+    st.subheader("📝 Erkannte Angaben")
 
     st.success(
         "Bitte die automatisch erkannten Angaben kurz "
         "mit dem Originalinserat vergleichen."
     )
 
-
     col1, col2, col3 = st.columns(3)
 
     with col1:
-
         titel = st.text_input(
             "Wohnung / Titel",
             value=str(
@@ -706,7 +662,6 @@ if analyse:
         )
 
     with col2:
-
         ort = st.text_input(
             "Ort",
             value=str(
@@ -715,7 +670,6 @@ if analyse:
         )
 
     with col3:
-
         zimmer = st.number_input(
             "Zimmer",
             min_value=1.0,
@@ -746,11 +700,9 @@ if analyse:
         "parkplatz_kosten"
     )
 
-
     col1, col2, col3 = st.columns(3)
 
     with col1:
-
         nettomiete_text = st.text_input(
             "Nettomiete CHF",
             value=(
@@ -762,7 +714,6 @@ if analyse:
         )
 
     with col2:
-
         nebenkosten_text = st.text_input(
             "Nebenkosten CHF",
             value=(
@@ -774,7 +725,6 @@ if analyse:
         )
 
     with col3:
-
         parkplatz_text = st.text_input(
             "Parkplatz CHF",
             value=(
@@ -838,7 +788,6 @@ if analyse:
         )
 
     else:
-
         gesamtpreis = None
 
         st.warning(
@@ -863,7 +812,6 @@ if analyse:
     col1, col2 = st.columns(2)
 
     with col1:
-
         i_nicht_eg = st.selectbox(
             "Nicht Erdgeschoss?",
             optionen,
@@ -899,7 +847,6 @@ if analyse:
         )
 
     with col2:
-
         i_parkplatz = st.selectbox(
             "Parkplatz vorhanden?",
             optionen,
@@ -957,7 +904,6 @@ if analyse:
         )
 
         if "durchschnitt" in steuer_info:
-
             st.write(
                 "Vergleich mit den ausgewählten "
                 f"BL-Suchgemeinden: **"
@@ -979,7 +925,6 @@ if analyse:
             i_steuer = "Unbekannt"
 
     else:
-
         st.info(
             "Steuerfuss konnte für diese Gemeinde "
             "nicht automatisch bestimmt werden."
@@ -989,7 +934,7 @@ if analyse:
 
 
     # =====================================================
-    # BEWERTUNG
+    # WOHNUNG BEWERTEN
     # =====================================================
 
     st.divider()
@@ -1013,7 +958,6 @@ if analyse:
         gesamt_wunschpunkte += 3
 
         if gesamtpreis is None:
-
             details.append(
                 (
                     "❓",
@@ -1023,11 +967,9 @@ if analyse:
             )
 
         else:
-
             beurteilbar += 3
 
             if gesamtpreis <= max_miete:
-
                 punkte += 3
                 bestaetigte_wunschpunkte += 3
 
@@ -1041,7 +983,6 @@ if analyse:
                 )
 
             else:
-
                 details.append(
                     (
                         "❌",
@@ -1062,7 +1003,6 @@ if analyse:
             <= zimmer
             <= max_zimmer
         ):
-
             punkte += 2
             bestaetigte_wunschpunkte += 2
 
@@ -1075,7 +1015,6 @@ if analyse:
             )
 
         else:
-
             details.append(
                 (
                     "❌",
@@ -1161,7 +1100,6 @@ if analyse:
             )
 
             if ergebnis_pruefung is None:
-
                 details.append(
                     (
                         "❓",
@@ -1171,11 +1109,9 @@ if analyse:
                 )
 
             else:
-
                 beurteilbar += 1
 
                 if ergebnis_pruefung:
-
                     punkte += 1
                     bestaetigte_wunschpunkte += 1
 
@@ -1188,7 +1124,6 @@ if analyse:
                     )
 
                 else:
-
                     details.append(
                         (
                             "❌",
@@ -1199,7 +1134,6 @@ if analyse:
 
 
         if beurteilbar > 0:
-
             match_beurteilbar = round(
                 punkte
                 / beurteilbar
@@ -1207,12 +1141,10 @@ if analyse:
             )
 
         else:
-
             match_beurteilbar = 0
 
 
         if gesamt_wunschpunkte > 0:
-
             bestaetigungsgrad = round(
                 bestaetigte_wunschpunkte
                 / gesamt_wunschpunkte
@@ -1220,7 +1152,6 @@ if analyse:
             )
 
         else:
-
             bestaetigungsgrad = 0
 
 
@@ -1254,7 +1185,7 @@ if analyse:
 
 
     # =====================================================
-    # ERGEBNIS
+    # ERGEBNIS ANZEIGEN
     # =====================================================
 
     ergebnis = (
@@ -1269,21 +1200,18 @@ if analyse:
         match = ergebnis["match"]
 
         if match >= 85:
-
             st.success(
                 f"🟢 Match der beurteilbaren Kriterien: "
                 f"{match}%"
             )
 
         elif match >= 70:
-
             st.warning(
                 f"🟡 Match der beurteilbaren Kriterien: "
                 f"{match}%"
             )
 
         else:
-
             st.error(
                 f"🔴 Match der beurteilbaren Kriterien: "
                 f"{match}%"
@@ -1293,21 +1221,18 @@ if analyse:
         col1, col2, col3 = st.columns(3)
 
         with col1:
-
             st.metric(
                 "Beurteilbarer Match",
                 f"{ergebnis['match']}%",
             )
 
         with col2:
-
             st.metric(
                 "Wunschliste bestätigt",
                 f"{ergebnis['bestaetigt']}%",
             )
 
         with col3:
-
             st.metric(
                 "Noch offen",
                 ergebnis["offen"],
@@ -1315,14 +1240,12 @@ if analyse:
 
 
         if ergebnis["titel"]:
-
             st.write(
                 f"**Wohnung:** "
                 f"{ergebnis['titel']}"
             )
 
         if ergebnis["ort"]:
-
             st.write(
                 f"**Ort:** "
                 f"{ergebnis['ort']}"
@@ -1332,14 +1255,12 @@ if analyse:
             ergebnis["gesamtpreis"]
             is not None
         ):
-
             st.write(
                 "**Gesamtpreis inkl. NK + Parkplatz:** "
                 f"CHF {ergebnis['gesamtpreis']:,.0f}"
             )
 
         else:
-
             st.write(
                 "**Gesamtpreis:** "
                 "noch nicht vollständig bekannt"
@@ -1350,7 +1271,6 @@ if analyse:
             ergebnis["steuerfuss"]
             is not None
         ):
-
             st.write(
                 "**Steuerfuss:** "
                 f"{ergebnis['steuerfuss']:g} %"
@@ -1376,7 +1296,6 @@ if analyse:
             and ergebnis["gesamtpreis"]
             > max_miete
         ):
-
             st.error(
                 "Die Wohnung überschreitet das Budget "
                 f"von CHF {max_miete:,.0f} um CHF "
@@ -1385,16 +1304,11 @@ if analyse:
 
 
         if ergebnis["url"]:
-
             st.link_button(
                 "🏠 Originalinserat öffnen",
                 ergebnis["url"],
             )
 
-
-        # =================================================
-        # MERKEN
-        # =================================================
 
         if st.button(
             "❤️ Wohnung merken",
@@ -1403,16 +1317,13 @@ if analyse:
 
             bereits_vorhanden = False
 
-            for wohnung in (
-                st.session_state.merkliste
-            ):
+            for wohnung in st.session_state.merkliste:
 
                 if (
                     ergebnis["url"]
                     and wohnung.get("url")
                     == ergebnis["url"]
                 ):
-
                     bereits_vorhanden = True
 
                 elif (
@@ -1422,19 +1333,16 @@ if analyse:
                     and wohnung.get("ort")
                     == ergebnis["ort"]
                 ):
-
                     bereits_vorhanden = True
 
 
             if bereits_vorhanden:
-
                 st.warning(
                     "Diese Wohnung ist bereits "
                     "in der Merkliste."
                 )
 
             else:
-
                 neue_wohnung = {
                     "titel": ergebnis["titel"],
                     "ort": ergebnis["ort"],
@@ -1574,7 +1482,7 @@ else:
         )
 
         if preis is None:
-            preis_text = "Unbekannt"
+            preis_text = "❓ Unbekannt"
 
         else:
             preis_text = (
@@ -1587,7 +1495,7 @@ else:
         )
 
         if steuerwert is None:
-            steuer_text = "Unbekannt"
+            steuer_text = "❓ Unbekannt"
 
         else:
             steuer_text = (
@@ -1630,7 +1538,7 @@ else:
 
 
     # =====================================================
-    # EINZELNE WOHNUNGEN
+    # GESPEICHERTE WOHNUNGEN
     # =====================================================
 
     st.subheader(
@@ -1664,7 +1572,6 @@ else:
             )
 
             if zimmerwert is not None:
-
                 st.write(
                     f"**Zimmer:** "
                     f"{zimmerwert:g}"
@@ -1675,7 +1582,6 @@ else:
                 wohnung.get("gesamtpreis")
                 is not None
             ):
-
                 st.write(
                     "**Gesamtpreis:** "
                     f"CHF "
@@ -1683,7 +1589,6 @@ else:
                 )
 
             else:
-
                 st.write(
                     "**Gesamtpreis:** unbekannt"
                 )
@@ -1693,7 +1598,6 @@ else:
                 wohnung.get("steuerfuss")
                 is not None
             ):
-
                 st.write(
                     "**Steuerfuss:** "
                     f"{wohnung['steuerfuss']:g} %"
@@ -1717,7 +1621,6 @@ else:
 
 
             if wohnung.get("url"):
-
                 st.link_button(
                     "🏠 Originalinserat öffnen",
                     wohnung["url"],
