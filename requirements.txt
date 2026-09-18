@@ -2,3 +2,4 @@ streamlit
 openai
 requests
 beautifulsoup4
+streamlit-local-storage==0.0.25
