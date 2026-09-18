@@ -28,8 +28,6 @@ st.divider()
 # =========================================================
 
 def lade_inserat(url):
-    """Versucht, Text direkt von einer Inseratseite zu laden."""
-
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -71,8 +69,6 @@ def lade_inserat(url):
 
 
 def ki_analyse(text):
-    """Analysiert den Inserattext mit OpenAI."""
-
     client = OpenAI(
         api_key=st.secrets["OPENAI_API_KEY"]
     )
@@ -109,51 +105,44 @@ Folgende Felder werden benötigt:
 
 REGELN:
 
-Für Ja/Nein-Felder verwende:
+Für Ja/Nein-Felder:
 
 true = eindeutig vorhanden bzw. erfüllt
 false = eindeutig nicht vorhanden bzw. nicht erfüllt
 null = nicht sicher bestimmbar
 
 Bei "nicht_erdgeschoss":
-
 true = Wohnung liegt NICHT im Erdgeschoss
 false = Wohnung liegt im Erdgeschoss
 null = Stockwerk unbekannt
 
 Bei "badewanne":
-
 true = Badewanne vorhanden
 false = ausdrücklich keine Badewanne
 null = unbekannt
 
 Bei "begehbare_dusche":
-
-true nur, wenn eine bodenebene, begehbare oder Walk-in-Dusche
-ausdrücklich erwähnt wird oder eindeutig beschrieben ist.
+true nur, wenn eine bodenebene, begehbare oder
+Walk-in-Dusche ausdrücklich erwähnt wird.
 
 Bei "modern":
-
-true, wenn das Inserat eindeutig einen modernen,
-neuwertigen, sanierten oder hochwertigen Ausbau beschreibt.
+true, wenn moderner, neuwertiger, sanierter oder
+hochwertiger Ausbau eindeutig beschrieben wird.
 
 Bei "ruhig":
-
 true nur, wenn ruhige Lage, ruhiges Quartier,
 verkehrsarme Lage oder Vergleichbares erwähnt wird.
 
 Bei "gute_oev":
-
 true, wenn gute ÖV-Verbindungen oder nahe
-Bus-/Tram-/Bahnhaltestellen erwähnt werden.
+Bus-, Tram- oder Bahnhaltestellen erwähnt werden.
 
 Geldbeträge nur als Zahlen in CHF zurückgeben.
 
-Wichtig:
-Wenn nur ein Gesamtmietpreis angegeben ist und keine
-Aufteilung zwischen Nettomiete und Nebenkosten vorhanden ist,
-verwende diesen Betrag bei "nettomiete" und setze
-"nebenkosten" auf null.
+WICHTIG:
+Fehlende Kosten niemals mit 0 ersetzen.
+Wenn Nettomiete, Nebenkosten oder Parkplatzkosten
+nicht angegeben sind, verwende null.
 
 Inserattext:
 
@@ -187,25 +176,22 @@ def bool_zu_text(wert):
     return "Unbekannt"
 
 
-def wert_oder_standard(wert, standard):
-    if wert is None:
-        return standard
+def index_fuer(wert):
+    optionen = [
+        "Ja",
+        "Nein",
+        "Unbekannt",
+    ]
 
-    return wert
-
-
-def sichere_zahl(wert, standard=0):
-    try:
-        if wert is None:
-            return standard
-
-        return int(float(wert))
-
-    except (ValueError, TypeError):
-        return standard
+    return optionen.index(
+        bool_zu_text(wert)
+    )
 
 
-def sichere_float_zahl(wert, standard=3.0):
+def sichere_float_zahl(
+    wert,
+    standard=3.0,
+):
     try:
         if wert is None:
             return standard
@@ -217,13 +203,9 @@ def sichere_float_zahl(wert, standard=3.0):
 
 
 def pruefen(
-    gewuenscht,
     wert,
     umgekehrt=False,
 ):
-    if not gewuenscht:
-        return None
-
     if wert == "Unbekannt":
         return None
 
@@ -450,7 +432,7 @@ else:
 
 
 # =========================================================
-# 3. INSERAT MIT KI ANALYSIEREN
+# 3. INSERAT ANALYSIEREN
 # =========================================================
 
 st.divider()
@@ -458,8 +440,8 @@ st.header("🤖 3. Inserat mit KI prüfen")
 
 st.write(
     "Am zuverlässigsten funktioniert die Analyse, wenn du "
-    "den Text des Inserats unten einfügst. Zusätzlich kannst "
-    "du den Link zum Originalinserat speichern."
+    "den Text des Inserats einfügst. Den Link zum "
+    "Originalinserat kannst du zusätzlich speichern."
 )
 
 
@@ -473,16 +455,15 @@ inserat_text_manuell = st.text_area(
     "Inserattext einfügen",
     height=250,
     placeholder=(
-        "Auf dem Immobilienportal das Inserat öffnen, "
-        "den Beschreibungstext und die wichtigsten Angaben "
-        "kopieren und hier einfügen."
+        "Inserat öffnen, Beschreibung, Preis und "
+        "weitere Angaben kopieren und hier einfügen."
     ),
 )
 
 
 st.caption(
-    "Tipp: Du kannst auch einen grösseren Textbereich des "
-    "Inserats kopieren. Die KI sucht die relevanten Angaben heraus."
+    "Am besten den ganzen relevanten Inserattext inklusive "
+    "Mietpreis, Nebenkosten und Parkplatz kopieren."
 )
 
 
@@ -495,21 +476,15 @@ if st.button(
     text_fuer_analyse = ""
     quelle = ""
 
-    # -----------------------------------------------------
-    # 1. PRIORITÄT: MANUELL EINGEFÜGTER TEXT
-    # -----------------------------------------------------
-
-    if len(inserat_text_manuell.strip()) >= 50:
+    if len(
+        inserat_text_manuell.strip()
+    ) >= 50:
 
         text_fuer_analyse = (
             inserat_text_manuell.strip()
         )
 
         quelle = "eingefügter Inserattext"
-
-    # -----------------------------------------------------
-    # 2. FALLBACK: URL DIREKT ABRUFEN
-    # -----------------------------------------------------
 
     elif inserat_url.strip():
 
@@ -531,30 +506,24 @@ if st.button(
         except requests.exceptions.RequestException:
 
             st.warning(
-                "Das Immobilienportal blockiert den "
-                "automatischen Zugriff. "
-                "Bitte kopiere den Inserattext aus dem "
-                "Originalinserat in das Textfeld oben."
+                "Das Portal blockiert den automatischen "
+                "Zugriff. Bitte den Inserattext kopieren "
+                "und oben einfügen."
             )
 
         except Exception:
 
             st.warning(
-                "Das Inserat konnte nicht direkt gelesen werden. "
-                "Bitte kopiere den Inserattext in das Textfeld oben."
+                "Das Inserat konnte nicht direkt gelesen "
+                "werden. Bitte den Inserattext einfügen."
             )
 
     else:
 
         st.warning(
-            "Bitte einen Inserattext einfügen oder "
-            "einen Inserat-Link angeben."
+            "Bitte Inserattext oder Inserat-Link angeben."
         )
 
-
-    # -----------------------------------------------------
-    # KI-ANALYSE
-    # -----------------------------------------------------
 
     if text_fuer_analyse:
 
@@ -610,8 +579,8 @@ st.header("📝 4. Erkannte Angaben prüfen")
 if analyse:
 
     st.success(
-        "Die KI hat Angaben erkannt. "
-        "Bitte kurz mit dem Originalinserat vergleichen."
+        "Die KI hat Angaben erkannt. Bitte kurz mit "
+        "dem Originalinserat vergleichen."
     )
 
 else:
@@ -628,10 +597,7 @@ with col1:
     titel = st.text_input(
         "Wohnung / Titel",
         value=str(
-            wert_oder_standard(
-                analyse.get("titel"),
-                "",
-            )
+            analyse.get("titel") or ""
         ),
     )
 
@@ -640,10 +606,7 @@ with col2:
     ort = st.text_input(
         "Ort",
         value=str(
-            wert_oder_standard(
-                analyse.get("ort"),
-                "",
-            )
+            analyse.get("ort") or ""
         ),
     )
 
@@ -661,72 +624,156 @@ with col3:
     )
 
 
+# =========================================================
+# KOSTEN
+# =========================================================
+
 st.subheader("💰 Kosten")
+
+netto_erkannt = analyse.get(
+    "nettomiete"
+)
+
+nk_erkannt = analyse.get(
+    "nebenkosten"
+)
+
+park_erkannt = analyse.get(
+    "parkplatz_kosten"
+)
+
 
 col1, col2, col3 = st.columns(3)
 
 with col1:
 
-    nettomiete = st.number_input(
+    nettomiete_text = st.text_input(
         "Nettomiete CHF",
-        min_value=0,
-        value=sichere_zahl(
-            analyse.get("nettomiete"),
-            0,
+        value=(
+            str(netto_erkannt)
+            if netto_erkannt is not None
+            else ""
         ),
-        step=50,
+        placeholder="unbekannt",
     )
 
 with col2:
 
-    nebenkosten = st.number_input(
+    nebenkosten_text = st.text_input(
         "Nebenkosten CHF",
-        min_value=0,
-        value=sichere_zahl(
-            analyse.get("nebenkosten"),
-            0,
+        value=(
+            str(nk_erkannt)
+            if nk_erkannt is not None
+            else ""
         ),
-        step=10,
+        placeholder="unbekannt",
     )
 
 with col3:
 
-    parkplatz_kosten = st.number_input(
+    parkplatz_text = st.text_input(
         "Parkplatz CHF",
-        min_value=0,
-        value=sichere_zahl(
-            analyse.get("parkplatz_kosten"),
-            0,
+        value=(
+            str(park_erkannt)
+            if park_erkannt is not None
+            else ""
         ),
-        step=10,
+        placeholder="unbekannt",
     )
 
 
-gesamtpreis = (
-    nettomiete
-    + nebenkosten
-    + parkplatz_kosten
+def geld_lesen(text):
+    text = text.strip()
+
+    if not text:
+        return None
+
+    try:
+        text = (
+            text
+            .replace("CHF", "")
+            .replace("'", "")
+            .replace("’", "")
+            .replace(" ", "")
+            .replace(",", ".")
+        )
+
+        return float(text)
+
+    except ValueError:
+        return None
+
+
+nettomiete = geld_lesen(
+    nettomiete_text
+)
+
+nebenkosten = geld_lesen(
+    nebenkosten_text
+)
+
+parkplatz_kosten = geld_lesen(
+    parkplatz_text
 )
 
 
-st.metric(
-    "Gesamtpreis inkl. NK + Parkplatz",
-    f"CHF {gesamtpreis:,.0f}",
-)
+# Welche Kosten werden überhaupt benötigt?
 
+kosten_fehlen = []
+
+if nettomiete is None:
+    kosten_fehlen.append(
+        "Nettomiete"
+    )
+
+if nebenkosten is None:
+    kosten_fehlen.append(
+        "Nebenkosten"
+    )
+
+if parkplatz and parkplatz_kosten is None:
+    kosten_fehlen.append(
+        "Parkplatzkosten"
+    )
+
+
+if not kosten_fehlen:
+
+    gesamtpreis = (
+        nettomiete
+        + nebenkosten
+        + (
+            parkplatz_kosten
+            if parkplatz_kosten is not None
+            else 0
+        )
+    )
+
+    st.metric(
+        "Gesamtpreis inkl. NK + Parkplatz",
+        f"CHF {gesamtpreis:,.0f}",
+    )
+
+else:
+
+    gesamtpreis = None
+
+    st.warning(
+        "⚠️ Gesamtpreis noch nicht vollständig bekannt. "
+        "Es fehlen: "
+        + ", ".join(kosten_fehlen)
+    )
+
+
+# =========================================================
+# AUSSTATTUNG
+# =========================================================
 
 optionen = [
     "Ja",
     "Nein",
     "Unbekannt",
 ]
-
-
-def index_fuer(wert):
-
-    text = bool_zu_text(wert)
-
-    return optionen.index(text)
 
 
 st.subheader("🏡 Ausstattung")
@@ -810,8 +857,8 @@ i_steuer = st.selectbox(
 )
 
 st.caption(
-    "Der Steuerfuss wird derzeit nicht aus dem Inserat "
-    "ermittelt und kann manuell bewertet werden."
+    "Der Steuerfuss wird derzeit noch manuell bewertet. "
+    "Die automatische Gemeindebewertung folgt später."
 )
 
 
@@ -829,42 +876,70 @@ if st.button(
 ):
 
     punkte = 0
-    maximal = 0
+    beurteilbar = 0
+    gesamt_wunschpunkte = 0
+    bestaetigte_wunschpunkte = 0
+
     details = []
 
 
-    # PREIS
-    maximal += 3
+    # =====================================================
+    # PREIS - GEWICHT 3
+    # =====================================================
 
-    if gesamtpreis <= max_miete:
+    gesamt_wunschpunkte += 3
 
-        punkte += 3
+    if gesamtpreis is None:
 
         details.append(
             (
-                "✅",
+                "❓",
                 "Gesamtpreis",
-                f"CHF {gesamtpreis:,.0f} – innerhalb Budget",
+                "noch nicht vollständig bekannt",
             )
         )
 
     else:
 
-        details.append(
-            (
-                "❌",
-                "Gesamtpreis",
-                f"CHF {gesamtpreis:,.0f} – über Budget",
+        beurteilbar += 3
+
+        if gesamtpreis <= max_miete:
+
+            punkte += 3
+            bestaetigte_wunschpunkte += 3
+
+            details.append(
+                (
+                    "✅",
+                    "Gesamtpreis",
+                    f"CHF {gesamtpreis:,.0f} – "
+                    "innerhalb Budget",
+                )
             )
-        )
+
+        else:
+
+            details.append(
+                (
+                    "❌",
+                    "Gesamtpreis",
+                    f"CHF {gesamtpreis:,.0f} – "
+                    "über Budget",
+                )
+            )
 
 
-    # ZIMMER
-    maximal += 2
+    # =====================================================
+    # ZIMMER - GEWICHT 2
+    # =====================================================
+
+    gesamt_wunschpunkte += 2
+    beurteilbar += 2
 
     if min_zimmer <= zimmer <= max_zimmer:
 
         punkte += 2
+        bestaetigte_wunschpunkte += 2
 
         details.append(
             (
@@ -884,6 +959,10 @@ if st.button(
             )
         )
 
+
+    # =====================================================
+    # WEITERE KRITERIEN
+    # =====================================================
 
     pruefungen = [
         (
@@ -950,19 +1029,34 @@ if st.button(
         umgekehrt,
     ) in pruefungen:
 
-        if gewuenscht:
+        if not gewuenscht:
+            continue
 
-            maximal += 1
+        gesamt_wunschpunkte += 1
 
-            ergebnis = pruefen(
-                gewuenscht,
-                wert,
-                umgekehrt,
+        ergebnis = pruefen(
+            wert,
+            umgekehrt,
+        )
+
+        if ergebnis is None:
+
+            details.append(
+                (
+                    "❓",
+                    name,
+                    "noch nicht beurteilbar",
+                )
             )
 
-            if ergebnis is True:
+        else:
+
+            beurteilbar += 1
+
+            if ergebnis:
 
                 punkte += 1
+                bestaetigte_wunschpunkte += 1
 
                 details.append(
                     (
@@ -972,7 +1066,7 @@ if st.button(
                     )
                 )
 
-            elif ergebnis is False:
+            else:
 
                 details.append(
                     (
@@ -982,50 +1076,95 @@ if st.button(
                     )
                 )
 
-            else:
 
-                details.append(
-                    (
-                        "❓",
-                        name,
-                        "nicht angegeben",
-                    )
-                )
+    # =====================================================
+    # SCORES
+    # =====================================================
 
+    if beurteilbar > 0:
 
-    if maximal:
-
-        score = round(
-            punkte / maximal * 100
+        match_beurteilbar = round(
+            punkte / beurteilbar * 100
         )
 
     else:
 
-        score = 0
+        match_beurteilbar = 0
 
 
-    st.subheader("📊 Ergebnis")
+    if gesamt_wunschpunkte > 0:
 
-
-    if score >= 85:
-
-        st.success(
-            f"🟢 Match: {score}% – "
-            "sehr hohe Übereinstimmung"
+        bestaetigungsgrad = round(
+            bestaetigte_wunschpunkte
+            / gesamt_wunschpunkte
+            * 100
         )
 
-    elif score >= 70:
+    else:
+
+        bestaetigungsgrad = 0
+
+
+    unbekannt = sum(
+        1
+        for symbol, _, _ in details
+        if symbol == "❓"
+    )
+
+
+    # =====================================================
+    # ERGEBNIS
+    # =====================================================
+
+    st.divider()
+    st.header("📊 Ergebnis")
+
+
+    if match_beurteilbar >= 85:
+
+        st.success(
+            f"🟢 Match der beurteilbaren Kriterien: "
+            f"{match_beurteilbar}%"
+        )
+
+    elif match_beurteilbar >= 70:
 
         st.warning(
-            f"🟡 Match: {score}% – "
-            "gute Übereinstimmung"
+            f"🟡 Match der beurteilbaren Kriterien: "
+            f"{match_beurteilbar}%"
         )
 
     else:
 
         st.error(
-            f"🔴 Match: {score}% – "
-            "mehrere Kriterien fehlen"
+            f"🔴 Match der beurteilbaren Kriterien: "
+            f"{match_beurteilbar}%"
+        )
+
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        st.metric(
+            "Beurteilbarer Match",
+            f"{match_beurteilbar}%",
+        )
+
+    with col2:
+
+        st.metric(
+            "Gesamte Wunschliste bestätigt",
+            f"{bestaetigungsgrad}%",
+        )
+
+
+    if unbekannt:
+
+        st.info(
+            f"ℹ️ {unbekannt} Kriterium/Kriterien sind "
+            "noch unbekannt und wurden beim "
+            "beurteilbaren Match nicht negativ gewertet."
         )
 
 
@@ -1043,10 +1182,18 @@ if st.button(
         )
 
 
-    st.write(
-        f"**Gesamtpreis:** "
-        f"CHF {gesamtpreis:,.0f}"
-    )
+    if gesamtpreis is not None:
+
+        st.write(
+            f"**Gesamtpreis:** "
+            f"CHF {gesamtpreis:,.0f}"
+        )
+
+    else:
+
+        st.write(
+            "**Gesamtpreis:** noch nicht vollständig bekannt"
+        )
 
 
     st.subheader("Kriterien")
@@ -1063,15 +1210,10 @@ if st.button(
         )
 
 
-    if inserat_url:
-
-        st.link_button(
-            "🏠 Originalinserat öffnen",
-            inserat_url,
-        )
-
-
-    if gesamtpreis > max_miete:
+    if (
+        gesamtpreis is not None
+        and gesamtpreis > max_miete
+    ):
 
         st.error(
             f"Die Wohnung überschreitet das "
@@ -1081,18 +1223,11 @@ if st.button(
         )
 
 
-    unbekannt = sum(
-        1
-        for symbol, _, _ in details
-        if symbol == "❓"
-    )
+    if inserat_url:
 
-
-    if unbekannt:
-
-        st.info(
-            f"{unbekannt} Kriterium/Kriterien "
-            "konnten noch nicht beurteilt werden."
+        st.link_button(
+            "🏠 Originalinserat öffnen",
+            inserat_url,
         )
 
 
