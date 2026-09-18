@@ -5,6 +5,7 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 from openai import OpenAI
+from streamlit_local_storage import LocalStorage
 
 
 st.set_page_config(
@@ -39,6 +40,10 @@ STEUERFUESSE_BL_2026 = {
     "Pratteln": 58.5,
     "Reinach": 58.5,
 }
+
+MERKLISTE_KEY = "wohnungs_finder_merkliste_v1"
+
+localS = LocalStorage()
 
 
 # =========================================================
@@ -296,6 +301,7 @@ def steuervergleich(
     vergleichswerte = []
 
     for ort_name in suchorte:
+
         normalisiert = (
             suchgemeinde_normalisieren(
                 ort_name
@@ -313,6 +319,7 @@ def steuervergleich(
             )
 
     if not vergleichswerte:
+
         return {
             "gemeinde": gemeinde,
             "steuerfuss": steuerfuss,
@@ -346,6 +353,29 @@ def steuervergleich(
     }
 
 
+def merkliste_speichern():
+    """
+    Speichert die aktuelle Merkliste als JSON
+    im Browser.
+    """
+
+    try:
+
+        daten = json.dumps(
+            st.session_state.merkliste,
+            ensure_ascii=False,
+        )
+
+        localS.setItem(
+            MERKLISTE_KEY,
+            daten,
+            key="merkliste_speichern",
+        )
+
+    except Exception:
+        pass
+
+
 # =========================================================
 # SESSION STATE
 # =========================================================
@@ -356,8 +386,56 @@ if "analyse" not in st.session_state:
 if "merkliste" not in st.session_state:
     st.session_state.merkliste = []
 
+if "merkliste_geladen" not in st.session_state:
+    st.session_state.merkliste_geladen = False
+
 if "letztes_ergebnis" not in st.session_state:
     st.session_state.letztes_ergebnis = None
+
+
+# =========================================================
+# MERKLISTE AUS BROWSER LADEN
+# =========================================================
+
+if not st.session_state.merkliste_geladen:
+
+    gespeicherte_daten = localS.getItem(
+        MERKLISTE_KEY,
+        key="merkliste_laden",
+    )
+
+    if gespeicherte_daten:
+
+        try:
+
+            if isinstance(
+                gespeicherte_daten,
+                str,
+            ):
+
+                geladene_liste = json.loads(
+                    gespeicherte_daten
+                )
+
+            else:
+
+                geladene_liste = (
+                    gespeicherte_daten
+                )
+
+            if isinstance(
+                geladene_liste,
+                list,
+            ):
+
+                st.session_state.merkliste = (
+                    geladene_liste
+                )
+
+        except Exception:
+            pass
+
+    st.session_state.merkliste_geladen = True
 
 
 # =========================================================
@@ -400,6 +478,7 @@ weitere_orte = st.text_input(
 col1, col2, col3 = st.columns(3)
 
 with col1:
+
     max_miete = st.number_input(
         "Max. Gesamtpreis inkl. NK + Parkplatz (CHF)",
         min_value=500,
@@ -409,6 +488,7 @@ with col1:
     )
 
 with col2:
+
     min_zimmer = st.selectbox(
         "Mindestens Zimmer",
         [
@@ -426,6 +506,7 @@ with col2:
     )
 
 with col3:
+
     max_zimmer = st.selectbox(
         "Maximal Zimmer",
         [
@@ -449,6 +530,7 @@ st.subheader("Wunschkriterien")
 col1, col2 = st.columns(2)
 
 with col1:
+
     nicht_eg = st.checkbox(
         "Nicht im Erdgeschoss",
         True,
@@ -470,6 +552,7 @@ with col1:
     )
 
 with col2:
+
     parkplatz = st.checkbox(
         "Autoabstellplatz / Parkplatz",
         True,
@@ -496,11 +579,6 @@ steuer = st.checkbox(
     True,
 )
 
-st.caption(
-    "Die Einstellungen können jederzeit für eine andere "
-    "Person oder Region angepasst werden."
-)
-
 
 # =========================================================
 # 2. INSERAT PRÜFEN
@@ -510,8 +588,8 @@ st.divider()
 st.header("🤖 2. Inserat prüfen")
 
 st.write(
-    "Inserat auf Comparis, Flatfox oder einem anderen Portal "
-    "öffnen, den relevanten Text kopieren und hier einfügen."
+    "Inserat öffnen, den relevanten Text kopieren "
+    "und hier einfügen."
 )
 
 
@@ -550,11 +628,13 @@ if st.button(
     elif inserat_url.strip():
 
         try:
+
             text_fuer_analyse = lade_inserat(
                 inserat_url.strip()
             )
 
         except Exception:
+
             st.warning(
                 "Das Immobilienportal blockiert den "
                 "automatischen Zugriff. Bitte den "
@@ -562,6 +642,7 @@ if st.button(
             )
 
     else:
+
         st.warning(
             "Bitte Inserattext oder Inserat-Link angeben."
         )
@@ -579,8 +660,13 @@ if st.button(
                     text_fuer_analyse
                 )
 
-                st.session_state.analyse = analyse
-                st.session_state.letztes_ergebnis = None
+                st.session_state.analyse = (
+                    analyse
+                )
+
+                st.session_state.letztes_ergebnis = (
+                    None
+                )
 
             st.success(
                 "✅ Inserat erfolgreich analysiert."
@@ -611,6 +697,7 @@ if analyse:
     col1, col2, col3 = st.columns(3)
 
     with col1:
+
         titel = st.text_input(
             "Wohnung / Titel",
             value=str(
@@ -619,6 +706,7 @@ if analyse:
         )
 
     with col2:
+
         ort = st.text_input(
             "Ort",
             value=str(
@@ -627,6 +715,7 @@ if analyse:
         )
 
     with col3:
+
         zimmer = st.number_input(
             "Zimmer",
             min_value=1.0,
@@ -661,6 +750,7 @@ if analyse:
     col1, col2, col3 = st.columns(3)
 
     with col1:
+
         nettomiete_text = st.text_input(
             "Nettomiete CHF",
             value=(
@@ -672,6 +762,7 @@ if analyse:
         )
 
     with col2:
+
         nebenkosten_text = st.text_input(
             "Nebenkosten CHF",
             value=(
@@ -683,6 +774,7 @@ if analyse:
         )
 
     with col3:
+
         parkplatz_text = st.text_input(
             "Parkplatz CHF",
             value=(
@@ -735,8 +827,7 @@ if analyse:
             + nebenkosten
             + (
                 parkplatz_kosten
-                if parkplatz_kosten
-                is not None
+                if parkplatz_kosten is not None
                 else 0
             )
         )
@@ -806,7 +897,6 @@ if analyse:
                 analyse.get("ruhig")
             ),
         )
-
 
     with col2:
 
@@ -899,7 +989,7 @@ if analyse:
 
 
     # =====================================================
-    # WOHNUNG BEWERTEN
+    # BEWERTUNG
     # =====================================================
 
     st.divider()
@@ -911,6 +1001,7 @@ if analyse:
 
         punkte = 0
         beurteilbar = 0
+
         gesamt_wunschpunkte = 0
         bestaetigte_wunschpunkte = 0
 
@@ -1064,12 +1155,12 @@ if analyse:
 
             gesamt_wunschpunkte += 1
 
-            ergebnis = pruefen(
+            ergebnis_pruefung = pruefen(
                 wert,
                 umgekehrt,
             )
 
-            if ergebnis is None:
+            if ergebnis_pruefung is None:
 
                 details.append(
                     (
@@ -1083,7 +1174,7 @@ if analyse:
 
                 beurteilbar += 1
 
-                if ergebnis:
+                if ergebnis_pruefung:
 
                     punkte += 1
                     bestaetigte_wunschpunkte += 1
@@ -1163,7 +1254,7 @@ if analyse:
 
 
     # =====================================================
-    # ERGEBNIS ANZEIGEN
+    # ERGEBNIS
     # =====================================================
 
     ergebnis = (
@@ -1202,18 +1293,21 @@ if analyse:
         col1, col2, col3 = st.columns(3)
 
         with col1:
+
             st.metric(
                 "Beurteilbarer Match",
                 f"{ergebnis['match']}%",
             )
 
         with col2:
+
             st.metric(
                 "Wunschliste bestätigt",
                 f"{ergebnis['bestaetigt']}%",
             )
 
         with col3:
+
             st.metric(
                 "Noch offen",
                 ergebnis["offen"],
@@ -1221,12 +1315,14 @@ if analyse:
 
 
         if ergebnis["titel"]:
+
             st.write(
                 f"**Wohnung:** "
                 f"{ergebnis['titel']}"
             )
 
         if ergebnis["ort"]:
+
             st.write(
                 f"**Ort:** "
                 f"{ergebnis['ort']}"
@@ -1236,13 +1332,14 @@ if analyse:
             ergebnis["gesamtpreis"]
             is not None
         ):
+
             st.write(
                 "**Gesamtpreis inkl. NK + Parkplatz:** "
-                f"CHF "
-                f"{ergebnis['gesamtpreis']:,.0f}"
+                f"CHF {ergebnis['gesamtpreis']:,.0f}"
             )
 
         else:
+
             st.write(
                 "**Gesamtpreis:** "
                 "noch nicht vollständig bekannt"
@@ -1253,6 +1350,7 @@ if analyse:
             ergebnis["steuerfuss"]
             is not None
         ):
+
             st.write(
                 "**Steuerfuss:** "
                 f"{ergebnis['steuerfuss']:g} %"
@@ -1311,18 +1409,20 @@ if analyse:
 
                 if (
                     ergebnis["url"]
-                    and wohnung["url"]
+                    and wohnung.get("url")
                     == ergebnis["url"]
                 ):
+
                     bereits_vorhanden = True
 
                 elif (
                     not ergebnis["url"]
-                    and wohnung["titel"]
+                    and wohnung.get("titel")
                     == ergebnis["titel"]
-                    and wohnung["ort"]
+                    and wohnung.get("ort")
                     == ergebnis["ort"]
                 ):
+
                     bereits_vorhanden = True
 
 
@@ -1335,47 +1435,52 @@ if analyse:
 
             else:
 
+                neue_wohnung = {
+                    "titel": ergebnis["titel"],
+                    "ort": ergebnis["ort"],
+                    "zimmer": ergebnis["zimmer"],
+                    "gesamtpreis": (
+                        ergebnis["gesamtpreis"]
+                    ),
+                    "steuerfuss": (
+                        ergebnis["steuerfuss"]
+                    ),
+                    "match": ergebnis["match"],
+                    "bestaetigt": (
+                        ergebnis["bestaetigt"]
+                    ),
+                    "offen": ergebnis["offen"],
+                    "url": ergebnis["url"],
+                }
+
                 st.session_state.merkliste.append(
-                    {
-                        "titel": ergebnis["titel"],
-                        "ort": ergebnis["ort"],
-                        "zimmer": ergebnis["zimmer"],
-                        "gesamtpreis": (
-                            ergebnis["gesamtpreis"]
-                        ),
-                        "steuerfuss": (
-                            ergebnis["steuerfuss"]
-                        ),
-                        "match": ergebnis["match"],
-                        "bestaetigt": (
-                            ergebnis["bestaetigt"]
-                        ),
-                        "offen": ergebnis["offen"],
-                        "url": ergebnis["url"],
-                    }
+                    neue_wohnung
                 )
 
+                merkliste_speichern()
+
                 st.success(
-                    "❤️ Wohnung wurde zur "
-                    "Merkliste hinzugefügt."
+                    "❤️ Wohnung wurde gespeichert."
                 )
 
 
 # =========================================================
-# 3. MERKLISTE
+# 3. MERKLISTE & VERGLEICH
 # =========================================================
 
 st.divider()
 st.header("❤️ 3. Merkliste & Vergleich")
 
+st.caption(
+    "Die Merkliste wird lokal in diesem Browser gespeichert. "
+    "Andere Benutzer des Wohnungs-Finders sehen diese Liste nicht."
+)
+
 
 if not st.session_state.merkliste:
 
     st.info(
-        "Noch keine Wohnung gespeichert. "
-        "Nach einer Bewertung kannst du eine "
-        "interessante Wohnung mit "
-        "„❤️ Wohnung merken“ hinzufügen."
+        "Noch keine Wohnung gespeichert."
     )
 
 else:
@@ -1386,16 +1491,87 @@ else:
     )
 
 
+    # =====================================================
+    # SORTIERUNG
+    # =====================================================
+
+    sortierung = st.selectbox(
+        "Vergleich sortieren nach",
+        [
+            "Reihenfolge gespeichert",
+            "Höchster Match",
+            "Höchste Bestätigung",
+            "Tiefster Gesamtpreis",
+            "Tiefster Steuerfuss",
+        ],
+    )
+
+
+    wohnungen_sortiert = list(
+        st.session_state.merkliste
+    )
+
+
+    if sortierung == "Höchster Match":
+
+        wohnungen_sortiert.sort(
+            key=lambda x: x.get(
+                "match",
+                0,
+            ),
+            reverse=True,
+        )
+
+
+    elif sortierung == "Höchste Bestätigung":
+
+        wohnungen_sortiert.sort(
+            key=lambda x: x.get(
+                "bestaetigt",
+                0,
+            ),
+            reverse=True,
+        )
+
+
+    elif sortierung == "Tiefster Gesamtpreis":
+
+        wohnungen_sortiert.sort(
+            key=lambda x: (
+                x.get("gesamtpreis")
+                if x.get("gesamtpreis")
+                is not None
+                else float("inf")
+            )
+        )
+
+
+    elif sortierung == "Tiefster Steuerfuss":
+
+        wohnungen_sortiert.sort(
+            key=lambda x: (
+                x.get("steuerfuss")
+                if x.get("steuerfuss")
+                is not None
+                else float("inf")
+            )
+        )
+
+
+    # =====================================================
+    # VERGLEICHSTABELLE
+    # =====================================================
+
     tabellen_daten = []
 
     for nummer, wohnung in enumerate(
-        st.session_state.merkliste,
+        wohnungen_sortiert,
         start=1,
     ):
 
-        preis = wohnung[
+        preis = wohnung.get(
             "gesamtpreis"
-        ]
+        )
 
         if preis is None:
             preis_text = "Unbekannt"
@@ -1406,9 +1582,9 @@ else:
             )
 
 
-        steuerwert = wohnung[
+        steuerwert = wohnung.get(
             "steuerfuss"
-        ]
+        )
 
         if steuerwert is None:
             steuer_text = "Unbekannt"
@@ -1422,17 +1598,26 @@ else:
         tabellen_daten.append(
             {
                 "Nr.": nummer,
-                "Ort": wohnung["ort"],
-                "Zimmer": wohnung["zimmer"],
+                "Ort": wohnung.get(
+                    "ort",
+                    "",
+                ),
+                "Zimmer": wohnung.get(
+                    "zimmer",
+                    "",
+                ),
                 "Gesamtpreis": preis_text,
                 "Steuerfuss": steuer_text,
                 "Match": (
-                    f"{wohnung['match']}%"
+                    f"{wohnung.get('match', 0)}%"
                 ),
                 "Bestätigt": (
-                    f"{wohnung['bestaetigt']}%"
+                    f"{wohnung.get('bestaetigt', 0)}%"
                 ),
-                "Offen": wohnung["offen"],
+                "Offen": wohnung.get(
+                    "offen",
+                    0,
+                ),
             }
         )
 
@@ -1443,6 +1628,10 @@ else:
         hide_index=True,
     )
 
+
+    # =====================================================
+    # EINZELNE WOHNUNGEN
+    # =====================================================
 
     st.subheader(
         "Gespeicherte Wohnungen"
@@ -1455,27 +1644,35 @@ else:
     ):
 
         titel_anzeige = (
-            wohnung["titel"]
-            or wohnung["ort"]
+            wohnung.get("titel")
+            or wohnung.get("ort")
             or f"Wohnung {nummer}"
         )
+
 
         with st.expander(
             f"{nummer}. {titel_anzeige}"
         ):
 
             st.write(
-                f"**Ort:** {wohnung['ort']}"
+                f"**Ort:** "
+                f"{wohnung.get('ort', '')}"
             )
 
-            st.write(
-                f"**Zimmer:** "
-                f"{wohnung['zimmer']:g}"
+            zimmerwert = wohnung.get(
+                "zimmer"
             )
+
+            if zimmerwert is not None:
+
+                st.write(
+                    f"**Zimmer:** "
+                    f"{zimmerwert:g}"
+                )
 
 
             if (
-                wohnung["gesamtpreis"]
+                wohnung.get("gesamtpreis")
                 is not None
             ):
 
@@ -1492,23 +1689,34 @@ else:
                 )
 
 
+            if (
+                wohnung.get("steuerfuss")
+                is not None
+            ):
+
+                st.write(
+                    "**Steuerfuss:** "
+                    f"{wohnung['steuerfuss']:g} %"
+                )
+
+
             st.write(
                 f"**Match:** "
-                f"{wohnung['match']}%"
+                f"{wohnung.get('match', 0)}%"
             )
 
             st.write(
                 f"**Wunschliste bestätigt:** "
-                f"{wohnung['bestaetigt']}%"
+                f"{wohnung.get('bestaetigt', 0)}%"
             )
 
             st.write(
                 f"**Offene Kriterien:** "
-                f"{wohnung['offen']}"
+                f"{wohnung.get('offen', 0)}"
             )
 
 
-            if wohnung["url"]:
+            if wohnung.get("url"):
 
                 st.link_button(
                     "🏠 Originalinserat öffnen",
@@ -1526,6 +1734,8 @@ else:
                     nummer - 1
                 )
 
+                merkliste_speichern()
+
                 st.rerun()
 
 
@@ -1535,6 +1745,8 @@ else:
 
         st.session_state.merkliste = []
 
+        merkliste_speichern()
+
         st.rerun()
 
 
@@ -1543,6 +1755,5 @@ st.divider()
 st.caption(
     "Wohnungs-Finder Schweiz – Steuerfüsse BL: Stand 2026. "
     "KI-Angaben immer mit dem Originalinserat und dem "
-    "Mietvertrag überprüfen. Die Merkliste wird derzeit "
-    "nur während der laufenden Sitzung gespeichert."
+    "Mietvertrag überprüfen."
 )
