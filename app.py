@@ -153,7 +153,7 @@ def ort_ist_erlaubt(
     suchorte,
 ):
     """
-    Version 9.7:
+    Version 9.8:
     Eine Wohnung wird nur übernommen,
     wenn ihr Ort wirklich zu den gewählten
     Suchorten gehört.
@@ -247,7 +247,7 @@ def wohnungs_schluessel(
     wohnung,
 ):
     """
-    Version 9.7:
+    Version 9.8:
     Gleiche Strasse + Ort = gleiche Wohnung.
 
     Dadurch verschwinden Dubletten,
@@ -409,7 +409,7 @@ def ki_extrahiere_paket(
             or ""
         )
 
-        text = text[:2800]
+        text = text[:2600]
 
         kompakte_treffer.append(
             {
@@ -471,7 +471,12 @@ verwechselt werden.
 
 Wenn im Inserat Nettomiete und Nebenkosten
 vorhanden sind, müssen beide separat ausgegeben
-werden.
+werden. Suche ausdrücklich auch nach den Begriffen
+"Netto Miete", "Nettomiete", "Nebenkosten", "NK",
+"Bruttomiete", "Miete", "Net rent" und "Add'l expenses".
+Beispiel: Netto Miete CHF 1'343 + Nebenkosten CHF 250 +
+Miete CHF 1'593 => nettomiete=1343, nebenkosten=250,
+bruttomiete_ohne_parkplatz=1593, angegebene_miete=1593.
 
 Keine Daten verschiedener Wohnungen vermischen.
 Keine Angaben erfinden.
@@ -618,7 +623,7 @@ TREFFER:
 
 def lokale_textkontrolle(analyse, original):
     """
-    Version 9.7:
+    Version 9.8:
     Einfache, eindeutige Begriffe werden direkt im
     gelieferten Seitentext geprüft. Das ist schneller
     und robuster als dafür nochmals KI aufzurufen.
@@ -692,6 +697,105 @@ def lokale_textkontrolle(analyse, original):
 
 
 # =========================================================
+# VERSION 9.8 – LOKALE PREISPRÜFUNG
+# =========================================================
+
+def text_rund_um_adresse(original, strasse, radius=1800):
+    gesamter_text = " ".join([
+        str(original.get("title", "") or ""),
+        str(original.get("content", "") or ""),
+        str(original.get("raw_content", "") or ""),
+    ])
+    if not strasse:
+        return gesamter_text[:4000]
+    pos = gesamter_text.lower().find(str(strasse).lower())
+    if pos < 0:
+        return gesamter_text[:4000]
+    return gesamter_text[max(0, pos-radius):min(len(gesamter_text), pos+radius)]
+
+
+def preis_aus_text(text, muster):
+    m = re.search(muster, text, flags=re.IGNORECASE)
+    if not m:
+        return None
+    return sichere_float_zahl(m.group(1))
+
+
+def lokale_preiskontrolle(analyse, original):
+    ausschnitt = text_rund_um_adresse(original, analyse.get("strasse"))
+    zahl = r"([0-9][0-9'’., ]*)"
+    netto = preis_aus_text(ausschnitt, rf"(?:netto\s*miete|nettomiete|net\s*rent)\s*[:\-]?\s*(?:chf)?\s*{zahl}")
+    nk = preis_aus_text(ausschnitt, rf"(?:nebenkosten|\bnk\b|add['’]?l\s*expenses|additional\s*expenses)\s*[:\-]?\s*(?:chf)?\s*{zahl}")
+    brutto = preis_aus_text(ausschnitt, rf"(?:bruttomiete|gesamtmiete|miete\s+inkl\.?\s*nebenkosten)\s*[:\-]?\s*(?:chf)?\s*{zahl}")
+    park = preis_aus_text(ausschnitt, rf"(?:parkplatz|einstellplatz|autoabstellplatz|garagenplatz|tiefgaragenplatz)[^0-9]{{0,80}}(?:chf)\s*{zahl}")
+    if netto is not None:
+        analyse["nettomiete"] = netto
+    if nk is not None:
+        analyse["nebenkosten"] = nk
+    if netto is not None and nk is not None:
+        analyse["bruttomiete_ohne_parkplatz"] = netto + nk
+        analyse["angegebene_miete"] = netto + nk
+        analyse["mietpreis_art"] = "brutto"
+    elif brutto is not None:
+        analyse["bruttomiete_ohne_parkplatz"] = brutto
+        analyse["angegebene_miete"] = brutto
+        analyse["mietpreis_art"] = "brutto"
+    if park is not None and 20 <= park <= 500:
+        analyse["parkplatz_kosten"] = park
+        analyse["parkplatz"] = True
+    return analyse
+
+
+def direkte_links_suchen(ergebnisse):
+    if not ergebnisse:
+        return ergebnisse
+    api_key = st.secrets.get("TAVILY_API_KEY")
+    if not api_key:
+        return ergebnisse
+    adressen = []
+    for w in ergebnisse[:10]:
+        a = adresse_anzeigen(w.get("strasse"), w.get("ort"))
+        if a:
+            adressen.append(f'"{a}"')
+    if not adressen:
+        return ergebnisse
+    try:
+        response = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": api_key,
+                "query": "Mietwohnung Inserat Schweiz " + " OR ".join(adressen),
+                "search_depth": "advanced",
+                "max_results": 15,
+                "include_answer": False,
+                "include_raw_content": False,
+            },
+            timeout=25,
+        )
+        response.raise_for_status()
+        kandidaten = response.json().get("results", [])
+    except Exception:
+        return ergebnisse
+    for w in ergebnisse:
+        s = normalisiere_text(w.get("strasse"))
+        o = normalisiere_text(normalisiere_ort(w.get("ort")))
+        bester, punkte_best = None, 0
+        for k in kandidaten:
+            u = k.get("url", "")
+            ptxt = normalisiere_text(f"{k.get('title','')} {k.get('content','')} {u}")
+            punkte = (3 if s and s in ptxt else 0) + (1 if o and o in ptxt else 0)
+            if punkte > punkte_best:
+                bester, punkte_best = k, punkte
+        if bester is not None and punkte_best >= 3:
+            w["url"] = bester.get("url", w.get("url"))
+            w["quelle"] = quelle_aus_url(w["url"])
+            w["direktlink"] = True
+        else:
+            w["direktlink"] = False
+    return ergebnisse
+
+
+# =========================================================
 # PREISE
 # =========================================================
 
@@ -699,7 +803,7 @@ def preise_bereinigen(
     analyse,
 ):
     """
-    Version 9.7:
+    Version 9.8:
     Preisangaben werden nach der KI
     nochmals logisch geprüft.
     """
@@ -1560,7 +1664,7 @@ if st.button(
 
             treffer = tavily_suche(
                 suchtext,
-                max_results=8,
+                max_results=10,
             )
 
             fortschritt.progress(
@@ -1598,7 +1702,7 @@ if st.button(
                 )
 
             gefiltert = (
-                gefiltert[:6]
+                gefiltert[:8]
             )
 
             if not gefiltert:
@@ -1641,11 +1745,6 @@ if st.button(
                     ):
                         continue
 
-                    # Preise nochmals logisch bereinigen
-                    analyse = preise_bereinigen(
-                        analyse
-                    )
-
                     treffer_id = analyse.get(
                         "treffer_id"
                     )
@@ -1666,9 +1765,15 @@ if st.button(
                     if original is None:
                         continue
 
-                    # Version 9.7:
-                    # Eindeutige Begriffe wie Parterre/EG, Balkon,
-                    # Parkplatz usw. direkt aus dem Seitentext ergänzen.
+                    # Version 9.8: Preise und eindeutige Merkmale
+                    # zusätzlich direkt aus dem passenden Seitentext lesen.
+                    analyse = lokale_preiskontrolle(
+                        analyse,
+                        original,
+                    )
+                    analyse = preise_bereinigen(
+                        analyse
+                    )
                     analyse = lokale_textkontrolle(
                         analyse,
                         original,
@@ -1845,8 +1950,19 @@ if st.button(
                                         "",
                                     )
                                 ),
+
+                            "direktlink": False,
                         }
                     )
+
+                statusfeld.write(
+                    "🔗 Direkte Inserat-Links werden gesucht ..."
+                )
+                fortschritt.progress(92)
+
+                ergebnisse = direkte_links_suchen(
+                    ergebnisse
+                )
 
                 # SORTIERUNG
                 def sortierwert(
@@ -2181,8 +2297,14 @@ else:
                     f"{text}"
                 )
 
+            link_text = (
+                "🏠 Direktes Inserat öffnen"
+                if wohnung.get("direktlink")
+                else "🔎 Übersichtsseite / Quelle öffnen"
+            )
+
             st.link_button(
-                "🏠 Quelle / Inserat öffnen",
+                link_text,
                 wohnung[
                     "url"
                 ],
@@ -2312,6 +2434,12 @@ else:
                             "quelle":
                                 wohnung.get(
                                     "quelle"
+                                ),
+
+                            "direktlink":
+                                wohnung.get(
+                                    "direktlink",
+                                    False,
                                 ),
                         }
                     )
@@ -2593,8 +2721,14 @@ else:
             if wohnung.get(
                 "url"
             ):
+                gespeicherter_link_text = (
+                    "🏠 Direktes Inserat öffnen"
+                    if wohnung.get("direktlink")
+                    else "🔎 Übersichtsseite / Quelle öffnen"
+                )
+
                 st.link_button(
-                    "🏠 Quelle / Inserat öffnen",
+                    gespeicherter_link_text,
                     wohnung[
                         "url"
                     ],
@@ -2630,7 +2764,7 @@ else:
 st.divider()
 
 st.caption(
-    "Wohnungs-Finder Schweiz – automatische "
+    "Wohnungs-Finder Schweiz – Version 9.8 – automatische "
     "Websuche mit Tavily und KI-Auswertung. "
     "Nur ausgewählte Orte werden berücksichtigt. "
     "Maximalbudget inkl. bekannten Nebenkosten und "
