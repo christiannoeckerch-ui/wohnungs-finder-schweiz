@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import os
 import re
+from html import unescape
 from collections import defaultdict
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import requests
 import streamlit as st
@@ -184,6 +185,80 @@ def run_extract(api_key: str, results: list[dict], max_urls: int, advanced_limit
     return calls
 
 
+def markdown_links(raw: str, source_url: str) -> list[tuple[str, str]]:
+    """Read linked URLs from Tavily markdown, including URLs with parentheses."""
+    links = []
+    pattern = re.compile(r"(?<!!)\[([^\]\n]{1,160})\]\(")
+    for match in pattern.finditer(raw):
+        start, depth = match.end(), 1
+        cursor = start
+        while cursor < len(raw) and depth:
+            if raw[cursor] == "(":
+                depth += 1
+            elif raw[cursor] == ")":
+                depth -= 1
+            cursor += 1
+        if depth:
+            continue
+        target = unescape(raw[start:cursor - 1].strip().split(' "', 1)[0])
+        if not target or target.startswith(("#", "mailto:", "javascript:", "data:")):
+            continue
+        url = urljoin(source_url, target)
+        if urlsplit(url).scheme in ("https", "http"):
+            links.append((unescape(match.group(1)), url))
+    return links
+
+
+def run_overview_extract(api_key: str, results: list[dict], max_pages: int,
+                         gemeinde: str) -> tuple[list[dict], list[dict], list[dict]]:
+    """Extract a few search result lists and expose their actual linked object URLs."""
+    overview = [row for row in results if row["category"] == "wahrscheinlich Übersichtsseite"]
+    local = gemeinde.casefold()
+    slug = local.replace(" ", "-")
+    overview.sort(key=lambda row: (0 if local in (row["url"] + row["title"] + row["snippet"]).casefold()
+                                    or slug in row["url"].casefold() else 1,
+                                    0 if row["domain"] in PORTALS else 1))
+    selected = overview[:max_pages]
+    calls, discovered, seen = [], [], set()
+    for start in range(0, len(selected), 20):
+        chunk = selected[start:start + 20]
+        urls = [row["url"] for row in chunk]
+        try:
+            data = post_tavily(EXTRACT_URL, {"urls": urls, "extract_depth": "basic",
+                "format": "markdown", "include_usage": True}, api_key)
+            by_url = {item.get("url"): item for item in data.get("results", [])}
+            failed = {item.get("url"): item.get("error", "unbekannter Fehler")
+                      for item in data.get("failed_results", [])}
+            calls.append({"stage": "Übersichtsseiten", "depth": "basic", "urls": len(urls),
+                          "usage": data.get("usage"), "error": ""})
+            for row in chunk:
+                raw = (by_url.get(row["url"]) or {}).get("raw_content") or ""
+                row["overview_raw"] = raw
+                row["overview_links"] = markdown_links(raw, row["url"])
+                if raw.strip():
+                    row["overview_extract"] = "erfolgreich (basic)"
+                elif row["url"] in failed:
+                    row["overview_extract"] = f"Fehler (basic): {failed[row['url']]}"
+                else:
+                    row["overview_extract"] = "leer/blockiert (basic); keine Rohdaten erhalten"
+                for label, url in row["overview_links"]:
+                    category, reason = classify(url, label)
+                    if category != "wahrscheinlich Einzelinserat" or url in seen:
+                        continue
+                    seen.add(url)
+                    discovered.append({"url": url, "domain": domain(url), "title": label,
+                                       "snippet": "", "category": category, "reason": reason,
+                                       "source": row["url"], "extract": "nicht versucht",
+                                       "raw": "", "fields": None})
+        except (requests.RequestException, ValueError) as exc:
+            calls.append({"stage": "Übersichtsseiten", "depth": "basic", "urls": len(urls),
+                          "usage": None, "error": str(exc)})
+            for row in chunk:
+                row["overview_extract"] = f"API-Fehler (basic): {exc}"
+                row["overview_raw"], row["overview_links"] = "", []
+    return selected, discovered, calls
+
+
 def portal_summary(results: list[dict]) -> list[dict]:
     groups = defaultdict(list)
     for row in results:
@@ -228,7 +303,9 @@ def main() -> None:
     with st.expander("API-Aufwand begrenzen", expanded=False):
         max_urls = st.slider("Maximal mit Extract zu prüfende URLs", 0, 60, 20)
         advanced_limit = st.slider("Davon bei Fehler/Leere mit advanced erneut prüfen", 0, 5, 2)
-        st.caption("6 Search-Aufrufe mit je höchstens 10 Treffern. Basic-Extract in Paketen bis 20 URLs; advanced nur für ausgewählte Fehlschläge. Tatsächliche Credits stehen unten, wenn Tavily sie liefert.")
+        max_overviews = st.slider("Zusätzlich zu prüfende Übersichtsseiten", 0, 10, 4)
+        max_discovered = st.slider("Gefundene Direktlinks mit Extract prüfen", 0, 20, 5)
+        st.caption("6 Search-Aufrufe mit je höchstens 10 Treffern. Extract in Paketen bis 20 URLs; advanced nur für ausgewählte Fehlschläge. Tatsächliche Credits stehen unten, wenn Tavily sie liefert.")
     if not st.button("Diagnose starten", type="primary"):
         return
     if minimum > maximum:
@@ -240,17 +317,60 @@ def main() -> None:
         return
     with st.spinner("Tavily Search und Extract laufen …"):
         results, search_calls, returned = run_search(api_key, queries(gemeinde, minimum, maximum, price))
+        overviews, discovered, overview_calls = run_overview_extract(api_key, results, max_overviews, gemeinde)
         extract_calls = run_extract(api_key, results, max_urls, advanced_limit, gemeinde)
+        already = {row["url"] for row in results}
+        new_discovered = [row for row in discovered if row["url"] not in already]
+        discovered_calls = run_extract(api_key, new_discovered, max_discovered, 0, gemeinde)
+        for call in extract_calls:
+            call["stage"] = "Suchresultate"
+        for call in discovered_calls:
+            call["stage"] = "Gefundene Direktlinks"
+        all_extract_calls = overview_calls + extract_calls + discovered_calls
     st.subheader("API-Aufwand und Suchanfragen")
-    st.write(f"{len(search_calls)} Search-Aufrufe · {returned} rohe Treffer · {len(results)} eindeutige exakte URLs · {len(extract_calls)} Extract-Aufrufe")
+    st.write(f"{len(search_calls)} Search-Aufrufe · {returned} rohe Treffer · {len(results)} eindeutige exakte URLs · {len(all_extract_calls)} Extract-Aufrufe")
     st.dataframe(search_calls, use_container_width=True, hide_index=True)
-    st.dataframe(extract_calls, use_container_width=True, hide_index=True)
-    reported = [call["usage"].get("credits") for call in search_calls + extract_calls
+    if all_extract_calls:
+        st.dataframe(all_extract_calls, use_container_width=True, hide_index=True)
+    reported = [call["usage"].get("credits") for call in search_calls + all_extract_calls
                 if isinstance(call.get("usage"), dict) and isinstance(call["usage"].get("credits"), (int, float))]
     st.write(f"Von Tavily gemeldete Credits: {sum(reported)}" if reported else "Tavily hat keine Credit-Zahl geliefert; Aufrufzahlen stehen oben.")
     st.subheader("Portal-Zusammenfassung")
     st.caption("Brauchbare Direktlinks = Anteil aller Suchresultate mit konkreter Objekt-URL, erfolgreichem Extract sowie erkannter Adresse, Zimmerzahl und Miete. Nur Indizien, keine Bestätigung der Aktualität.")
     st.dataframe(portal_summary(results), use_container_width=True, hide_index=True)
+    st.subheader("Links aus Übersichtsseiten")
+    st.caption("Nur tatsächlich im Tavily-Rohtext verlinkte Objekt-URLs. Feldwerte einer Trefferliste werden keiner einzelnen Wohnung zugeordnet.")
+    st.write(f"{len(overviews)} Übersichtsseiten geprüft · {len(discovered)} verschiedene direkte Objekt-URLs gefunden · {len(new_discovered)} davon zuvor nicht als Suchresultat vorhanden")
+    for index, row in enumerate(overviews, 1):
+        with st.expander(f"{index}. [{row['domain']}] {row['title'] or '(ohne Titel)'} — {row['overview_extract']}"):
+            st.write("**Exakte Quell-URL:**", row["url"])
+            st.write("**Links im Rohtext:**", len(row["overview_links"]))
+            st.write("**Davon Direktlink-Kandidaten:**", sum(item["source"] == row["url"] for item in discovered))
+            if row["overview_raw"]:
+                st.text_area("Rohtext-Ausschnitt der Übersicht (erste 3000 Zeichen)", row["overview_raw"][:3000],
+                             height=180, key=f"overview_raw_{index}")
+            else:
+                st.write("**Rohtext:** nicht verfügbar")
+    if discovered:
+        st.caption("Portal-Zahlen für gefundene Direktlinks (Nenner: verlinkte Objekt-URLs, nicht alle Suchresultate).")
+        st.dataframe(portal_summary(discovered), use_container_width=True, hide_index=True)
+        st.write("**Gefundene Direktlink-Kandidaten:**")
+        for index, row in enumerate(discovered, 1):
+            with st.expander(f"{index}. [{row['domain']}] {row['title'] or '(ohne Linktext)'} — {row['extract']}"):
+                st.write("**Exakte URL:**", row["url"])
+                st.write("**Gefunden auf:**", row["source"])
+                st.write("**Klassifikation:**", row["category"], "—", row["reason"])
+                if row["url"] in already:
+                    st.write("**Extract:** bereits unter Suchresultaten geprüft oder dort nicht ausgewählt")
+                else:
+                    st.write("**Extract:**", row["extract"])
+                if row["fields"]:
+                    for field, value in row["fields"].items():
+                        st.write(f"**{field}:** {value}")
+                    st.text_area("Rohtext-Ausschnitt (erste 3000 Zeichen)", row["raw"][:3000],
+                                 height=180, key=f"discovered_raw_{index}")
+                elif row["extract"].startswith(("Fehler", "leer", "API-Fehler")):
+                    st.write("**Rohtext:** nicht verfügbar")
     st.subheader("Alle Suchresultate")
     if not results:
         st.warning("Keine Resultate. Fehler der einzelnen Suchanfragen stehen oben.")
