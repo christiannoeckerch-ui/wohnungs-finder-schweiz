@@ -29,6 +29,8 @@ def classify(url: str, title: str = "", snippet: str = "") -> tuple[str, str]:
     """Conservative URL-first heuristic; content is only supporting evidence."""
     path = urlsplit(url).path.lower().rstrip("/")
     query = urlsplit(url).query.lower()
+    if "/anbieterverzeichnis/" in path or "/anbieterprofil/" in path:
+        return "wahrscheinlich Übersichtsseite", "Anbieterprofil mit mehreren Angeboten, kein einzelnes Wohnungsinserat"
     overview_query = re.search(r"(?:^|&)(?:location|rooms|price|maxrent|sort|page|pagenum)=", query)
     overview_path = re.search(r"(?:/search|/suche|/suchen|/results?|/angebote)(?:/|$)|/(?:city|plz|ort|region)-[^/]+$|/in-[^/]+$", path)
     overview_title = re.search(r"\b\d+\s+(?:wohnung(?:en)?|apartments?|flats?|immobilien|treffer|angebote)\b|\b(?:seite|page)\s*\d+\b", title, re.I)
