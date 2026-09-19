@@ -23,8 +23,8 @@ st.set_page_config(
 
 st.title("🏠 Wohnungs-Finder Schweiz")
 st.write(
-    "Aktuelle Mietwohnungen automatisch suchen, "
-    "Inserate einzeln prüfen und interessante Wohnungen vergleichen. Version 10.1."
+    "Direkte Wohnungsinserate aus einer geprüften Flatfox-Momentaufnahme. "
+    "Die laufend aktuelle Suche ist unten verlinkt."
 )
 
 st.subheader("Direkte Wohnungsinserate in Reinach BL")
@@ -54,6 +54,7 @@ st.markdown(
 )
 
 st.divider()
+st.stop()
 
 
 # =========================================================
