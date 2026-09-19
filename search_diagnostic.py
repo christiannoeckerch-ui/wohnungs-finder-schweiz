@@ -111,6 +111,8 @@ def run_search(api_key: str, search_queries: list[tuple[str, list[str]]]) -> tup
                 "query": query, "search_depth": "basic", "topic": "general",
                 "max_results": 10, "include_answer": False, "include_raw_content": False,
                 "include_usage": True, "include_domains": domains,
+                "include_domains_mode": "restrict", "country": "switzerland",
+                "exact_match": True,
             }, api_key)
             found = data.get("results") or []
             calls.append({"query": query, "Domains": ", ".join(domains), "returned": len(found), "usage": data.get("usage"), "error": ""})
