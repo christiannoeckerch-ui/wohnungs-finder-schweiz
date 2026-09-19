@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlsplit
 
 import requests
 import streamlit as st
+from bs4 import BeautifulSoup
 
 
 SEARCH_URL = "https://api.tavily.com/search"
@@ -20,6 +21,22 @@ EXTRACT_URL = "https://api.tavily.com/extract"
 PORTALS = ("homegate.ch", "immoscout24.ch", "newhome.ch", "flatfox.ch")
 SWISS_SITES = PORTALS + ("comparis.ch", "home.ch", "homematch.ch", "realadvisor.ch", "alle-immobilien.ch", "immostreet.ch")
 FIELDS = ("Strasse + Hausnummer", "PLZ / Gemeinde", "Zimmer", "sichtbare Miete", "Nettomiete", "Nebenkosten", "Bruttomiete")
+FLATFOX_REINACH_SEARCH = "https://flatfox.ch/de/search/?query=Reinach%20BL"
+
+
+def probe_flatfox() -> dict:
+    """One no-cost check of whether server-side HTTP exposes direct listing cards."""
+    try:
+        response = requests.get(FLATFOX_REINACH_SEARCH, timeout=20,
+                                headers={"User-Agent": "Mozilla/5.0 (compatible; Wohnungs-Suchtest/1.0)",
+                                         "Accept": "text/html"})
+        soup = BeautifulSoup(response.text, "html.parser")
+        urls = list(dict.fromkeys(a.get("href", "") for a in soup.select('a[href*="/de/wohnung/"]')))
+        return {"HTTP-Status": response.status_code, "HTML-Zeichen": len(response.text),
+                "Direktlinks im Server-HTML": len(urls), "Beispiel-URLs": urls[:5],
+                "Hinweis": "Im Server-HTML gefunden" if urls else "Keine Inserat-Links im Server-HTML; möglicherweise werden sie erst im Browser geladen."}
+    except requests.RequestException as exc:
+        return {"Fehler": str(exc)}
 
 
 def domain(url: str) -> str:
@@ -295,6 +312,9 @@ def main() -> None:
     st.set_page_config(page_title="Wohnungs-Suchtest V1", layout="wide")
     st.title("Wohnungs-Suchtest V1")
     st.caption("Tavily Search → URL-Sichtung → Tavily Extract. Keine Ergebnisfilterung nach Adresse, Zimmer oder Preis.")
+    if st.button("Flatfox-Abruf ohne Tavily prüfen"):
+        st.subheader("Flatfox-Server-Test")
+        st.json(probe_flatfox())
     gemeinde = st.selectbox("Gemeinde", ["Reinach BL", "Basel", "Allschwil", "Binningen", "Münchenstein", "Muttenz"], index=0)
     left, middle, right = st.columns(3)
     minimum = left.number_input("Zimmer von", min_value=1.0, max_value=10.0, value=2.5, step=0.5)
