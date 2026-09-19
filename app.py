@@ -27,6 +27,32 @@ st.write(
     "Inserate einzeln prüfen und interessante Wohnungen vergleichen. Version 10.1."
 )
 
+st.subheader("Direkte Wohnungsinserate in Reinach BL")
+st.caption(
+    "Am 19.09.2026 direkt auf Flatfox gefunden: 2½–3½ Zimmer, "
+    "angezeigte Miete bis CHF 1’800. Diese Liste ist eine Momentaufnahme und "
+    "wird nicht automatisch aktualisiert. Preis und Verfügbarkeit im Inserat prüfen."
+)
+VERIFIZIERTE_DIREKTLINKS = [
+    ("Fleischbachstr. 28", "2½", 1290, False, "https://flatfox.ch/de/wohnung/fleischbachstr-28-4153-reinach-bl/86317823/"),
+    ("Mischelistrasse 55", "3", 1360, False, "https://flatfox.ch/de/wohnung/mischelistrasse-55-4153-reinach-bl/86208640/"),
+    ("Christoph Merian-Ring 9", "2½", 1380, False, "https://flatfox.ch/de/wohnung/christoph-merian-ring-9-4153-reinach/86318495/"),
+    ("Baselstrasse 96", "2½", 1400, True, "https://flatfox.ch/de/wohnung/baselstrasse-96-4153-reinach/86365175/"),
+    ("Reichensteinerstrasse 10", "2½", 1425, True, "https://flatfox.ch/de/wohnung/reichensteinerstrasse-10-4153-reinach/86362731/"),
+    ("Alemannenstrasse 1", "3", 1520, False, "https://flatfox.ch/de/wohnung/alemannenstrasse-1-4153-reinach-bl/86358915/"),
+    ("Schönenbachstrasse 12", "3½", 1530, False, "https://flatfox.ch/de/wohnung/schonenbachstrasse-12-4153-reinach-bl/86308151/"),
+    ("Adresse im Suchresultat nicht angegeben", "2½", 1586, False, "https://flatfox.ch/de/wohnung/4153-reinach-bl/86319129/"),
+    ("Brühlgasse 5", "3", 1590, False, "https://flatfox.ch/de/wohnung/bruhlgasse-5-4153-reinach/86320280/"),
+    ("Sonnenweg 28", "2½", 1700, True, "https://flatfox.ch/de/wohnung/sonnenweg-28-4153-reinach-bl/86351738/"),
+]
+for adresse, zimmer, miete, priority, url in VERIFIZIERTE_DIREKTLINKS:
+    zusatz = " · Flatfox Priority" if priority else ""
+    st.markdown(f"- **{adresse}** · {zimmer} Zimmer · CHF {miete:,}/Monat{zusatz} · [Inserat öffnen]({url})")
+st.markdown(
+    "[Laufend aktuelle Inserate direkt auf Flatfox ansehen]"
+    "(https://flatfox.ch/de/search/?query=Reinach%20BL)"
+)
+
 st.divider()
 
 
