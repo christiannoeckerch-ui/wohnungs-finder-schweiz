@@ -215,7 +215,7 @@ def run_overview_extract(api_key: str, results: list[dict], max_pages: int,
     overview = [row for row in results if row["category"] == "wahrscheinlich Übersichtsseite"]
     local = gemeinde.casefold()
     slug = local.replace(" ", "-")
-    overview.sort(key=lambda row: (0 if local in (row["url"] + row["title"] + row["snippet"]).casefold()
+    overview.sort(key=lambda row: (0 if local in (row["url"] + row["title"]).casefold()
                                     or slug in row["url"].casefold() else 1,
                                     0 if row["domain"] in PORTALS else 1))
     selected = overview[:max_pages]
@@ -303,7 +303,7 @@ def main() -> None:
     with st.expander("API-Aufwand begrenzen", expanded=False):
         max_urls = st.slider("Maximal mit Extract zu prüfende URLs", 0, 60, 20)
         advanced_limit = st.slider("Davon bei Fehler/Leere mit advanced erneut prüfen", 0, 5, 2)
-        max_overviews = st.slider("Zusätzlich zu prüfende Übersichtsseiten", 0, 10, 4)
+        max_overviews = st.slider("Zusätzlich zu prüfende Übersichtsseiten", 0, 10, 2)
         max_discovered = st.slider("Gefundene Direktlinks mit Extract prüfen", 0, 20, 5)
         st.caption("6 Search-Aufrufe mit je höchstens 10 Treffern. Extract in Paketen bis 20 URLs; advanced nur für ausgewählte Fehlschläge. Tatsächliche Credits stehen unten, wenn Tavily sie liefert.")
     if not st.button("Diagnose starten", type="primary"):
