@@ -3,7 +3,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import requests
 import streamlit as st
@@ -349,6 +349,7 @@ def steuervergleich(
 # TAVILY
 # =========================================================
 
+@st.cache_data(ttl=1200, show_spinner=False)
 def tavily_suche(
     suchtext,
     max_results=10,
@@ -695,11 +696,21 @@ def lokale_textkontrolle(analyse, original):
         ):
             analyse["gute_oev"] = True
 
+    if analyse.get("lift") is None:
+        if re.search(r"\b(?:kein|ohne)\s+(?:lift|aufzug)\b", text):
+            analyse["lift"] = False
+        elif re.search(r"\b(?:lift|aufzug)\b", text):
+            analyse["lift"] = True
+    if analyse.get("stockwerk") is None:
+        m = re.search(r"\b(\d{1,2})\.?\s*(?:stock|etage|geschoss)\b", text)
+        if m:
+            analyse["stockwerk"] = int(m.group(1))
+            analyse["nicht_erdgeschoss"] = int(m.group(1)) > 0
     return analyse
 
 
 # =========================================================
-# VERSION 9.8 – LOKALE PREISPRÜFUNG
+# VERSION 10.0 – LOKALE PREISPRÜFUNG
 # =========================================================
 
 def wohnungsspezifischer_text(analyse, original):
@@ -886,23 +897,28 @@ def detailseite_laden(wohnung):
         text = re.sub(r"\s+", " ", text)
         if normalisiere_text(wohnung.get("strasse")) not in normalisiere_text(text):
             return "", "Adresse auf Detailseite nicht gefunden"
+        if normalisiere_text(normalisiere_ort(wohnung.get("ort"))) not in normalisiere_text(text):
+            return "", "Ort auf Detailseite nicht bestätigt"
+        if not wohnungsspezifischer_text(wohnung, {"title": "", "content": text}):
+            return "", "Detailseite enthält mehrere Wohnungen"
         return text[:18000], "Detailseite gelesen"
     except (requests.RequestException, ValueError) as exc:
         return "", f"Detailseite nicht lesbar: {type(exc).__name__}"
 
 
+@st.cache_data(ttl=1200, show_spinner=False)
 def schnelle_wohnungen(treffer):
     """Kleiner KI-Aufruf nur für die erste Trefferliste."""
     daten = [
         {"treffer_id": t["_interne_id"], "titel": t.get("title", ""),
          "url": t.get("url", ""), "text": (t.get("content") or "")[:1100]}
-        for t in treffer
+        for t in (json.loads(x) for x in treffer)
     ]
     antwort = OpenAI(api_key=st.secrets["OPENAI_API_KEY"]).responses.create(
         model="gpt-5-mini",
         input=(
-            "Extrahiere einzelne Schweizer Mietwohnungen aus Suchtreffern. "
-            "Nur sicher zuordenbare Angaben; nichts erfinden, keine Wohnungen mischen. "
+            "Extrahiere nur einzelne Schweizer Mietwohnungen. Übersichtsseiten mit mehreren Wohnungen überspringen. "
+            "Nur Angaben aus demselben konkreten Inserat; Adresse, Ort und Miete müssen gemeinsam belegt sein. Nichts erfinden oder mischen. "
             "Antworte nur als JSON mit Wohnungen als Liste. Felder: treffer_id, "
             "titel, strasse, ort, zimmer, angegebene_miete, mietpreis_art "
             "(brutto/netto/unbekannt), einzelwohnung_sicher. "
@@ -913,6 +929,32 @@ def schnelle_wohnungen(treffer):
     return json.loads(antwort.output_text.strip().removeprefix("```json").removesuffix("```").strip()).get("wohnungen", [])
 
 
+def belegter_einzelner_treffer(analyse, quelle):
+    """Reject list pages and claims not actually present in the same result."""
+    text = " ".join(str(quelle.get(k) or "") for k in ("title", "content"))
+    addr = normalisiere_text(analyse.get("strasse"))
+    town = normalisiere_text(normalisiere_ort(analyse.get("ort")))
+    norm = normalisiere_text(text)
+    if not addr or addr not in norm or not town or town not in norm:
+        return False
+    # The municipality must be tied to this address, not another result on
+    # the same page.
+    address_at = norm.find(addr)
+    if town not in norm[max(0, address_at - 100):address_at + len(addr) + 100]:
+        return False
+    addresses = {normalisiere_text(x) for x in re.findall(
+        r"\b[A-ZÄÖÜ][\wäöüÄÖÜß.\- ]{2,45}?(?:strasse|straße|weg|gasse|allee|platz|ring)\s+\d+[a-zA-Z]?\b",
+        text, flags=re.IGNORECASE)}
+    if any(addr not in candidate for candidate in addresses):
+        return False
+    price = sichere_float_zahl(analyse.get("angegebene_miete"))
+    if price is not None:
+        digits = str(int(price))
+        if not re.search(r"(?<!\d)" + r"[\s'’.,]*".join(digits) + r"(?!\d)", text):
+            return False
+    return True
+
+
 def detailanalyse(wohnung, detailtext):
     """Teure Merkmalsanalyse nur für bereits angezeigte Wohnungen."""
     antwort = OpenAI(api_key=st.secrets["OPENAI_API_KEY"]).responses.create(
@@ -921,7 +963,7 @@ def detailanalyse(wohnung, detailtext):
             "Analysiere nur dieses einzelne Inserat. Gib JSON zurück mit "
             "nettomiete, nebenkosten, bruttomiete_ohne_parkplatz, "
             "parkplatz_kosten und den Feldern nicht_erdgeschoss, balkon, "
-            "parkplatz, begehbare_dusche, badewanne, modern, ruhig, gute_oev. "
+            "parkplatz, begehbare_dusche, badewanne, modern, ruhig, gute_oev, lift, stockwerk, rollstuhlgängig. "
             "Ja/Nein-Felder sind true, false oder null. Zahlen nur bei eindeutiger "
             "monatlicher CHF-Angabe; unbekannt ist null. Keine Werte erfinden. "
             "Wohnung: " + json.dumps({k: wohnung.get(k) for k in ("strasse", "ort", "zimmer")}, ensure_ascii=False)
@@ -1117,10 +1159,7 @@ def ist_innerhalb_budget(
 
     # Bereits die bekannte Miete
     # überschreitet das Budget.
-    if (
-        brutto is not None
-        and brutto > max_miete
-    ):
+    if (brutto is not None and brutto > max_miete) or (angegeben is not None and angegeben > max_miete):
         return False
 
     # Bruttomiete + Parkplatz bekannt.
@@ -1157,6 +1196,7 @@ def bewerte_wohnung(
     keine_badewanne,
     oev,
     steuer,
+    lift=False,
 ):
     punkte = 0
     beurteilbar = 0
@@ -1275,6 +1315,7 @@ def bewerte_wohnung(
             )
 
     pruefungen = [
+        ("Lift vorhanden", lift, analyse.get("lift"), False),
         (
             "Nicht Erdgeschoss",
             nicht_eg,
@@ -1711,6 +1752,8 @@ with col2:
         True,
     )
 
+    lift = st.checkbox("Lift vorhanden", True)
+
 steuer = st.checkbox(
     "Niedriger Steuerfuss bevorzugt",
     True,
@@ -1775,7 +1818,7 @@ if st.button("🔎 Wohnungen suchen", type="primary", use_container_width=True):
                     t["_interne_id"] = nr
                 suche_ende = time.monotonic()
                 try:
-                    analysen = schnelle_wohnungen(quellen)
+                    analysen = schnelle_wohnungen(tuple(json.dumps(t, ensure_ascii=False, sort_keys=True) for t in quellen))
                 except Exception:
                     analysen = []
                 ki_ende = time.monotonic()
@@ -1789,12 +1832,15 @@ if st.button("🔎 Wohnungen suchen", type="primary", use_container_width=True):
                         original = original_nach_id[int(analyse.get("treffer_id"))]
                     except (KeyError, ValueError, TypeError):
                         continue
+                    if not belegter_einzelner_treffer(analyse, original):
+                        continue
                     zimmer = sichere_float_zahl(analyse.get("zimmer"))
                     strasse, wohnort = analyse.get("strasse"), analyse.get("ort")
                     if (zimmer is None or not min_zimmer <= zimmer <= max_zimmer
                             or not brauchbare_strasse(strasse) or not wohnort
                             or not ort_ist_erlaubt(wohnort, suchorte)):
                         continue
+                    analyse = lokale_preiskontrolle(analyse, original)
                     analyse = preise_bereinigen(analyse)
                     if not ist_innerhalb_budget(analyse, max_miete, parkplatz):
                         continue
@@ -1805,7 +1851,7 @@ if st.button("🔎 Wohnungen suchen", type="primary", use_container_width=True):
                     bewertung = bewerte_wohnung(
                         analyse, suchorte, max_miete, min_zimmer, max_zimmer,
                         nicht_eg, balkon, modern, ruhig, parkplatz, dusche,
-                        keine_badewanne, oev, steuer)
+                        keine_badewanne, oev, steuer, lift)
                     url = original.get("url", "")
                     ergebnisse.append({
                         "titel": analyse.get("titel") or "Mietwohnung",
@@ -1838,72 +1884,53 @@ if st.button("🔎 Wohnungen suchen", type="primary", use_container_width=True):
         except Exception as exc:
             st.error(f"Suche nicht möglich: {exc}")
 
-if st.session_state.suchergebnisse:
-    if st.button("🔍 Details der gefundenen Wohnungen prüfen", use_container_width=True):
-        beginn = time.monotonic()
-        ergebnisse = st.session_state.suchergebnisse
-        with st.spinner("Inseratseiten und Details werden geprüft ..."):
-            ohne_link = [w for w in ergebnisse if not w.get("direktlink")]
-            if ohne_link:
-                direkte_links_suchen(ohne_link)
-            direkt = [(i, w) for i, w in enumerate(ergebnisse) if w.get("direktlink")]
-            detailtexte = {}
-            with ThreadPoolExecutor(max_workers=5) as pool:
-                futures = {pool.submit(detailseite_laden, w): i for i, w in direkt}
-                for future in as_completed(futures):
-                    i = futures[future]
-                    try:
-                        detailtexte[i] = future.result()
-                    except Exception:
-                        detailtexte[i] = ("", "Detailseite nicht lesbar")
-            laden_ende = time.monotonic()
-            analysen = 0
-            for i, wohnung in enumerate(ergebnisse):
-                schluessel = wohnungs_schluessel(wohnung)
-                analyse = dict(st.session_state.detail_optionen.get(schluessel, {}))
-                text, status = detailtexte.get(i, ("", "kein sicherer Direktlink"))
-                if not text:
-                    original = st.session_state.detail_quellen.get(schluessel, {})
-                    # Provider-Text nur, wenn er dieser Wohnung eindeutig gehört.
-                    text = wohnungsspezifischer_text(wohnung, original)
-                    if text:
-                        status = "Suchprovider-Text geprüft"
-                if text:
-                    original = {"title": wohnung.get("titel", ""), "content": text,
-                                "raw_content": ""}
-                    analyse = lokale_preiskontrolle(analyse, original)
-                    analyse = lokale_textkontrolle(analyse, original)
-                    try:
-                        detail = detailanalyse(wohnung, text)
-                        for k, v in detail.items():
-                            if v is not None and analyse.get(k) is None:
-                                analyse[k] = v
-                        analysen += 1
-                    except Exception:
-                        pass
-                analyse = preise_bereinigen(analyse)
-                bewertung = bewerte_wohnung(
-                    analyse, suchorte, max_miete, min_zimmer, max_zimmer,
-                    nicht_eg, balkon, modern, ruhig, parkplatz, dusche,
-                    keine_badewanne, oev, steuer)
-                for feld in ("angegebene_miete", "nettomiete", "nebenkosten",
-                             "parkplatz_kosten", "gesamtpreis", "steuerfuss",
-                             "match", "bestaetigt", "offen", "details", "status"):
-                    wohnung[feld] = bewertung[feld]
-                wohnung["detail_status"] = status
-                wohnung["mietpreis_art"] = analyse.get("mietpreis_art")
-                # Nur sicher bekannte Gesamtkosten über dem Budget ausschließen.
-                wohnung["budget_ueberschritten"] = not ist_innerhalb_budget(
-                    analyse, max_miete, parkplatz)
-            st.session_state.suchergebnisse = [
-                w for w in ergebnisse if not w.get("budget_ueberschritten")]
-            st.session_state.detail_diagnose = (
-                f"Detailseiten {len(direkt)}, davon gelesen "
-                f"{sum(bool(t) for t, _ in detailtexte.values())}; "
-                f"KI-Detailanalysen {analysen}; Laden {laden_ende-beginn:.1f} s, "
-                f"Stufe 2 gesamt {time.monotonic()-beginn:.1f} s"
-            )
-        st.success("Detailprüfung abgeschlossen.")
+def einzelne_detailpruefung(wohnung, suchorte, max_miete, min_zimmer, max_zimmer,
+                          nicht_eg, balkon, modern, ruhig, parkplatz, dusche,
+                          keine_badewanne, oev, steuer, lift):
+    beginn = time.monotonic()
+    schluessel = wohnungs_schluessel(wohnung)
+    analyse = dict(st.session_state.detail_optionen.get(schluessel, {}))
+    if not wohnung.get("direktlink"):
+        direkte_links_suchen([wohnung])
+    text, status = detailseite_laden(wohnung)
+    if not text:
+        original = st.session_state.detail_quellen.get(schluessel, {})
+        text = wohnungsspezifischer_text(wohnung, original)
+        if text:
+            status = "Einzelner Suchtreffer geprüft"
+    geladen = time.monotonic()
+    ki = 0
+    if text:
+        original = {"title": wohnung.get("titel", ""), "content": text, "raw_content": ""}
+        analyse = lokale_preiskontrolle(analyse, original)
+        analyse = lokale_textkontrolle(analyse, original)
+        try:
+            detail = detailanalyse(wohnung, text)
+            for k, v in detail.items():
+                if k in ("lift", "stockwerk", "rollstuhlgängig", "nicht_erdgeschoss",
+                         "balkon", "parkplatz", "begehbare_dusche", "badewanne",
+                         "modern", "ruhig", "gute_oev", "nettomiete", "nebenkosten",
+                         "bruttomiete_ohne_parkplatz", "parkplatz_kosten") and v is not None and analyse.get(k) is None:
+                    analyse[k] = v
+            ki = 1
+        except Exception:
+            pass
+    analyse = preise_bereinigen(analyse)
+    bewertung = bewerte_wohnung(analyse, suchorte, max_miete, min_zimmer,
+        max_zimmer, nicht_eg, balkon, modern, ruhig, parkplatz, dusche,
+        keine_badewanne, oev, steuer, lift)
+    for feld in ("angegebene_miete", "nettomiete", "nebenkosten", "parkplatz_kosten",
+                 "gesamtpreis", "steuerfuss", "match", "bestaetigt", "offen", "details", "status"):
+        wohnung[feld] = bewertung[feld]
+    wohnung["detail_status"] = status
+    wohnung["mietpreis_art"] = analyse.get("mietpreis_art")
+    wohnung["stockwerk"] = analyse.get("stockwerk")
+    wohnung["rollstuhlgängig"] = analyse.get("rollstuhlgängig")
+    wohnung["budget_ueberschritten"] = not ist_innerhalb_budget(analyse, max_miete, parkplatz)
+    st.session_state.detail_diagnose = (f"1 Inserat; Seite {geladen-beginn:.1f} s, "
+        f"KI-Analysen {ki}, gesamt {time.monotonic()-beginn:.1f} s")
+    return wohnung
+
 
 if st.session_state.get("diagnose"):
     st.caption("Diagnose Stufe 1: " + st.session_state.diagnose)
@@ -2074,6 +2101,15 @@ else:
                 f"{status_text}"
             )
             st.caption(wohnung.get("detail_status", "Detailprüfung ausstehend"))
+            if st.button("🔍 Details prüfen", key=f"detail_{nummer}", use_container_width=True):
+                einzelne_detailpruefung(wohnung, suchorte, max_miete, min_zimmer,
+                    max_zimmer, nicht_eg, balkon, modern, ruhig, parkplatz, dusche,
+                    keine_badewanne, oev, steuer, lift)
+                if wohnung.get("budget_ueberschritten"):
+                    st.session_state.suchergebnisse = [w for w in st.session_state.suchergebnisse
+                        if w is not wohnung]
+                    st.warning("Inserat überschreitet die Budgetgrenze und wurde entfernt.")
+                st.rerun()
 
             st.write(
                 f"**Strasse:** "
@@ -2089,6 +2125,11 @@ else:
                 f"**Zimmer:** "
                 f"{zimmer:g}"
             )
+
+            if wohnung.get("stockwerk") is not None:
+                st.write(f"**Stockwerk:** {wohnung['stockwerk']}")
+            if wohnung.get("rollstuhlgängig") is True:
+                st.write("**Rollstuhlgängig:** Ja")
 
             # Preisaufschlüsselung
             st.write(
@@ -2641,7 +2682,7 @@ else:
 st.divider()
 
 st.caption(
-    "Wohnungs-Finder Schweiz – Version 9.9 – automatische "
+    "Wohnungs-Finder Schweiz – Version 10.0 – automatische "
     "Websuche mit Tavily und KI-Auswertung. "
     "Nur ausgewählte Orte werden berücksichtigt. "
     "Maximalbudget inkl. bekannten Nebenkosten und "
