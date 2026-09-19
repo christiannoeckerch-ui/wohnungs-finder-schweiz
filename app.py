@@ -1,5 +1,8 @@
 import json
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 import requests
@@ -366,7 +369,7 @@ def tavily_suche(
         "search_depth": "basic",
         "max_results": max_results,
         "include_answer": False,
-        "include_raw_content": True,
+        "include_raw_content": False,
     }
 
     response = requests.post(
@@ -628,11 +631,10 @@ def lokale_textkontrolle(analyse, original):
     gelieferten Seitentext geprüft. Das ist schneller
     und robuster als dafür nochmals KI aufzurufen.
     """
-    text = " ".join([
-        str(original.get("title", "") or ""),
-        str(original.get("content", "") or ""),
-        str(original.get("raw_content", "") or ""),
-    ]).lower()
+    text = wohnungsspezifischer_text(analyse, original)
+    if not text:
+        return analyse
+    text = text.lower()
 
     # Erdgeschoss / Parterre
     eg_muster = [
@@ -700,18 +702,37 @@ def lokale_textkontrolle(analyse, original):
 # VERSION 9.8 – LOKALE PREISPRÜFUNG
 # =========================================================
 
-def text_rund_um_adresse(original, strasse, radius=1800):
-    gesamter_text = " ".join([
-        str(original.get("title", "") or ""),
-        str(original.get("content", "") or ""),
-        str(original.get("raw_content", "") or ""),
-    ])
-    if not strasse:
-        return gesamter_text[:4000]
-    pos = gesamter_text.lower().find(str(strasse).lower())
-    if pos < 0:
-        return gesamter_text[:4000]
-    return gesamter_text[max(0, pos-radius):min(len(gesamter_text), pos+radius)]
+def wohnungsspezifischer_text(analyse, original):
+    """Nur lokale Angaben einer eindeutig einzelnen Wohnung übernehmen."""
+    strasse = str(analyse.get("strasse") or "").strip()
+    if not brauchbare_strasse(strasse):
+        return ""
+    title = str(original.get("title") or "")
+    content = str(original.get("content") or "")
+    raw = str(original.get("raw_content") or "")
+    text = " ".join((title, content, raw))
+    if strasse.casefold() not in text.casefold():
+        return ""
+    # Auf Listen können Preise und Eigenschaften benachbarter Inserate stehen.
+    # Ein weiteres Strassen-/Hausnummer-Muster macht lokale Overrides unsicher.
+    adressen = re.findall(
+        r"\b[A-ZÄÖÜ][\wäöüÄÖÜß.\- ]{2,45}?"
+        r"(?:strasse|straße|weg|gasse|allee|platz|ring)\s+\d+[a-zA-Z]?\b",
+        text, flags=re.IGNORECASE,
+    )
+    fremde = [a for a in adressen if strasse.casefold() not in a.casefold()
+              and a.casefold() not in strasse.casefold()]
+    if fremde:
+        return ""
+    # Mehrere unterschiedliche Mieten auf derselben Seite sind ein Listenhinweis.
+    mietwerte = re.findall(
+        r"(?:netto\s*miete|nettomiete|bruttomiete|gesamtmiete|"
+        r"miete\s+inkl\.?\s*nebenkosten)\s*[:\-]?\s*(?:CHF)?\s*"
+        r"([0-9][0-9'’., ]*)", text, flags=re.IGNORECASE,
+    )
+    if len({sichere_float_zahl(x) for x in mietwerte if sichere_float_zahl(x)}) > 2:
+        return ""
+    return text[:6000]
 
 
 def preis_aus_text(text, muster):
@@ -722,11 +743,15 @@ def preis_aus_text(text, muster):
 
 
 def lokale_preiskontrolle(analyse, original):
-    ausschnitt = text_rund_um_adresse(original, analyse.get("strasse"))
+    ausschnitt = wohnungsspezifischer_text(analyse, original)
+    if not ausschnitt:
+        return analyse
     zahl = r"([0-9][0-9'’., ]*)"
-    netto = preis_aus_text(ausschnitt, rf"(?:netto\s*miete|nettomiete|net\s*rent)\s*[:\-]?\s*(?:chf)?\s*{zahl}")
-    nk = preis_aus_text(ausschnitt, rf"(?:nebenkosten|\bnk\b|add['’]?l\s*expenses|additional\s*expenses)\s*[:\-]?\s*(?:chf)?\s*{zahl}")
-    brutto = preis_aus_text(ausschnitt, rf"(?:bruttomiete|gesamtmiete|miete\s+inkl\.?\s*nebenkosten)\s*[:\-]?\s*(?:chf)?\s*{zahl}")
+    netto = preis_aus_text(ausschnitt, rf"(?:mietpreis\s*exkl\.?\s*(?:nk|nebenkosten)|netto\s*miete|nettomiete|net\s*rent)\s*[:\-]?\s*(?:chf)?\s*{zahl}")
+    nk = preis_aus_text(ausschnitt, rf"(?:nebenkosten|add['’]?l\s*expenses|additional\s*expenses)\s*[:\-]?\s*(?:chf)?\s*{zahl}")
+    if nk is None:
+        nk = preis_aus_text(ausschnitt, rf"\bNK\b\s*[:\-]?\s*(?:chf)?\s*{zahl}")
+    brutto = preis_aus_text(ausschnitt, rf"(?:bruttomiete|gesamtmiete|miete\s+inkl\.?\s*nebenkosten|mietpreis(?!\s*exkl))\s*[:\-]?\s*(?:chf)?\s*{zahl}")
     park = preis_aus_text(ausschnitt, rf"(?:parkplatz|einstellplatz|autoabstellplatz|garagenplatz|tiefgaragenplatz)[^0-9]{{0,80}}(?:chf)\s*{zahl}")
     if netto is not None:
         analyse["nettomiete"] = netto
@@ -787,12 +812,123 @@ def direkte_links_suchen(ergebnisse):
             if punkte > punkte_best:
                 bester, punkte_best = k, punkte
         if bester is not None and punkte_best >= 3:
-            w["url"] = bester.get("url", w.get("url"))
-            w["quelle"] = quelle_aus_url(w["url"])
-            w["direktlink"] = True
+            kandidat_url = bester.get("url", "")
+            pfad = urlparse(kandidat_url).path.strip("/")
+            # Such- und Startseiten sind keine individuellen Inserate.
+            listenpfade = {"", "search", "suche", "mieten", "rent", "immobilien"}
+            direkt_pfad = bool(re.search(
+                r"(?:/|\b)(?:detail|details|listing|inserat|objekt|object)/|"
+                r"/[0-9]{5,}(?:[/?-]|$)", kandidat_url, flags=re.IGNORECASE,
+            ))
+            adress_slug = normalisiere_text(pfad)
+            if s and s in adress_slug:
+                direkt_pfad = True
+            if pfad.casefold() not in listenpfade and direkt_pfad and not any(
+                x in kandidat_url.casefold() for x in ("/search?", "/suche?", "/list?")
+            ):
+                w["url"] = kandidat_url
+                w["quelle"] = quelle_aus_url(w["url"])
+                w["direktlink"] = True
+            else:
+                w["direktlink"] = False
         else:
             w["direktlink"] = False
     return ergebnisse
+
+
+class InseratText(HTMLParser):
+    """Sichtbaren Text einer einzelnen Inseratseite einsammeln."""
+    def __init__(self):
+        super().__init__()
+        self.teile = []
+        self.verbergen = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"script", "style", "noscript", "svg"}:
+            self.verbergen += 1
+
+    def handle_endtag(self, tag):
+        if tag in {"script", "style", "noscript", "svg"}:
+            self.verbergen = max(0, self.verbergen - 1)
+
+    def handle_data(self, data):
+        if not self.verbergen and data.strip():
+            self.teile.append(data.strip())
+
+
+def ist_direktlink(url, strasse=""):
+    pfad = urlparse(url or "").path.strip("/").lower()
+    if not pfad or pfad in {"search", "suche", "mieten", "rent", "immobilien"}:
+        return False
+    slug = normalisiere_text(pfad)
+    adresse = normalisiere_text(strasse)
+    return bool(
+        re.search(r"(?:detail|listing|inserat|objekt|object|angebot)/|\d{5,}", pfad)
+        or (adresse and adresse in slug)
+    )
+
+
+def detailseite_laden(wohnung):
+    """Direkte Seite lesen; Listen und fremde Inserate nicht zuordnen."""
+    url = wohnung.get("url") or ""
+    if not ist_direktlink(url, wohnung.get("strasse")):
+        return "", "kein sicherer Direktlink"
+    try:
+        antwort = requests.get(
+            url, timeout=(4, 9), headers={"User-Agent": "Mozilla/5.0"},
+        )
+        antwort.raise_for_status()
+        if "html" not in antwort.headers.get("Content-Type", "").lower():
+            return "", "kein HTML"
+        parser = InseratText()
+        parser.feed(antwort.text[:750000])
+        text = " ".join(parser.teile)
+        text = re.sub(r"\s+", " ", text)
+        if normalisiere_text(wohnung.get("strasse")) not in normalisiere_text(text):
+            return "", "Adresse auf Detailseite nicht gefunden"
+        return text[:18000], "Detailseite gelesen"
+    except (requests.RequestException, ValueError) as exc:
+        return "", f"Detailseite nicht lesbar: {type(exc).__name__}"
+
+
+def schnelle_wohnungen(treffer):
+    """Kleiner KI-Aufruf nur für die erste Trefferliste."""
+    daten = [
+        {"treffer_id": t["_interne_id"], "titel": t.get("title", ""),
+         "url": t.get("url", ""), "text": (t.get("content") or "")[:1100]}
+        for t in treffer
+    ]
+    antwort = OpenAI(api_key=st.secrets["OPENAI_API_KEY"]).responses.create(
+        model="gpt-5-mini",
+        input=(
+            "Extrahiere einzelne Schweizer Mietwohnungen aus Suchtreffern. "
+            "Nur sicher zuordenbare Angaben; nichts erfinden, keine Wohnungen mischen. "
+            "Antworte nur als JSON mit Wohnungen als Liste. Felder: treffer_id, "
+            "titel, strasse, ort, zimmer, angegebene_miete, mietpreis_art "
+            "(brutto/netto/unbekannt), einzelwohnung_sicher. "
+            "Eine unbekannte Preisart bleibt unbekannt. TREFFER: "
+            + json.dumps(daten, ensure_ascii=False)
+        ),
+    )
+    return json.loads(antwort.output_text.strip().removeprefix("```json").removesuffix("```").strip()).get("wohnungen", [])
+
+
+def detailanalyse(wohnung, detailtext):
+    """Teure Merkmalsanalyse nur für bereits angezeigte Wohnungen."""
+    antwort = OpenAI(api_key=st.secrets["OPENAI_API_KEY"]).responses.create(
+        model="gpt-5-mini",
+        input=(
+            "Analysiere nur dieses einzelne Inserat. Gib JSON zurück mit "
+            "nettomiete, nebenkosten, bruttomiete_ohne_parkplatz, "
+            "parkplatz_kosten und den Feldern nicht_erdgeschoss, balkon, "
+            "parkplatz, begehbare_dusche, badewanne, modern, ruhig, gute_oev. "
+            "Ja/Nein-Felder sind true, false oder null. Zahlen nur bei eindeutiger "
+            "monatlicher CHF-Angabe; unbekannt ist null. Keine Werte erfinden. "
+            "Wohnung: " + json.dumps({k: wohnung.get(k) for k in ("strasse", "ort", "zimmer")}, ensure_ascii=False)
+            + " Text: " + detailtext[:11000]
+        ),
+    )
+    return json.loads(antwort.output_text.strip().removeprefix("```json").removesuffix("```").strip())
 
 
 # =========================================================
@@ -981,12 +1117,6 @@ def ist_innerhalb_budget(
 
     # Bereits die bekannte Miete
     # überschreitet das Budget.
-    if (
-        angegeben is not None
-        and angegeben > max_miete
-    ):
-        return False
-
     if (
         brutto is not None
         and brutto > max_miete
@@ -1624,421 +1754,161 @@ st.caption(
 )
 
 
-if st.button(
-    "🔎 Wohnungen suchen",
-    type="primary",
-    use_container_width=True,
-):
+if st.button("🔎 Wohnungen suchen", type="primary", use_container_width=True):
     if not suchorte:
-        st.warning(
-            "Bitte mindestens einen Ort auswählen."
-        )
-
+        st.warning("Bitte mindestens einen Ort auswählen.")
     else:
         st.session_state.suchergebnisse = []
-
-        statusfeld = st.empty()
-        fortschritt = st.progress(
-            5
-        )
-
+        st.session_state.detail_quellen = {}
+        st.session_state.detail_optionen = {}
+        st.session_state.detail_diagnose = ""
+        beginn = time.monotonic()
         try:
-            statusfeld.write(
-                "⚡ Schnellsuche nach aktuellen Wohnungen ..."
-            )
-
-            ort_text = " OR ".join(
-                f'"{ort}"'
-                for ort in suchorte
-            )
-
-            suchtext = (
-                f"Mietwohnung Schweiz "
-                f"({ort_text}) "
-                f"{min_zimmer:g} bis "
-                f"{max_zimmer:g} Zimmer "
-                f"Miete maximal CHF "
-                f"{max_miete:g} "
-                f"Balkon Parkplatz"
-            )
-
-            treffer = tavily_suche(
-                suchtext,
-                max_results=10,
-            )
-
-            fortschritt.progress(
-                30
-            )
-
-            gefiltert = []
-            urls = set()
-
-            for item in treffer:
-                url = item.get(
-                    "url",
-                    "",
-                )
-
-                if not url:
-                    continue
-
-                if url in urls:
-                    continue
-
-                urls.add(
-                    url
-                )
-
-                item[
-                    "_interne_id"
-                ] = (
-                    len(gefiltert)
-                    + 1
-                )
-
-                gefiltert.append(
-                    item
-                )
-
-            gefiltert = (
-                gefiltert[:8]
-            )
-
-            if not gefiltert:
-                fortschritt.empty()
-                statusfeld.empty()
-
-                st.warning(
-                    "Keine Suchtreffer gefunden."
-                )
-
-            else:
-                statusfeld.write(
-                    "🤖 KI prüft die gefundenen Wohnungen in einem Durchgang ..."
-                )
-                fortschritt.progress(45)
-
+            with st.spinner("Schnelle Wohnungssuche ..."):
+                ort_text = " OR ".join(f'"{ort}"' for ort in suchorte)
+                suchtext = (f"Mietwohnung Schweiz ({ort_text}) {min_zimmer:g} bis "
+                            f"{max_zimmer:g} Zimmer Miete maximal CHF {max_miete:g}")
+                webtreffer = tavily_suche(suchtext, max_results=10)
+                eindeutig = {t.get("url"): t for t in webtreffer if t.get("url")}
+                quellen = list(eindeutig.values())[:8]
+                for nr, t in enumerate(quellen, 1):
+                    t["_interne_id"] = nr
+                suche_ende = time.monotonic()
                 try:
-                    alle_analysen = ki_extrahiere_paket(
-                        gefiltert
-                    )
+                    analysen = schnelle_wohnungen(quellen)
                 except Exception:
-                    alle_analysen = []
+                    analysen = []
+                ki_ende = time.monotonic()
 
-                fortschritt.progress(85)
-
-                ergebnisse = []
-                bekannte_wohnungen = set()
-
-                original_nach_id = {
-                    item[
-                        "_interne_id"
-                    ]: item
-                    for item in gefiltert
-                }
-
-                for analyse in alle_analysen:
-                    if not analyse.get(
-                        "einzelwohnung_sicher",
-                        False,
-                    ):
+                original_nach_id = {t["_interne_id"]: t for t in quellen}
+                ergebnisse, bekannt = [], set()
+                for analyse in analysen:
+                    if not analyse.get("einzelwohnung_sicher", False):
                         continue
-
-                    treffer_id = analyse.get(
-                        "treffer_id"
-                    )
-
                     try:
-                        treffer_id = int(
-                            treffer_id
-                        )
-                    except Exception:
+                        original = original_nach_id[int(analyse.get("treffer_id"))]
+                    except (KeyError, ValueError, TypeError):
                         continue
-
-                    original = (
-                        original_nach_id.get(
-                            treffer_id
-                        )
-                    )
-
-                    if original is None:
+                    zimmer = sichere_float_zahl(analyse.get("zimmer"))
+                    strasse, wohnort = analyse.get("strasse"), analyse.get("ort")
+                    if (zimmer is None or not min_zimmer <= zimmer <= max_zimmer
+                            or not brauchbare_strasse(strasse) or not wohnort
+                            or not ort_ist_erlaubt(wohnort, suchorte)):
                         continue
-
-                    # Version 9.8: Preise und eindeutige Merkmale
-                    # zusätzlich direkt aus dem passenden Seitentext lesen.
-                    analyse = lokale_preiskontrolle(
-                        analyse,
-                        original,
-                    )
-                    analyse = preise_bereinigen(
-                        analyse
-                    )
-                    analyse = lokale_textkontrolle(
-                        analyse,
-                        original,
-                    )
-
-                    zimmer = sichere_float_zahl(
-                        analyse.get(
-                            "zimmer"
-                        )
-                    )
-
-                    # HART: Zimmer
-                    if zimmer is None:
+                    analyse = preise_bereinigen(analyse)
+                    if not ist_innerhalb_budget(analyse, max_miete, parkplatz):
                         continue
-
-                    if not (
-                        min_zimmer
-                        <= zimmer
-                        <= max_zimmer
-                    ):
+                    schluessel = wohnungs_schluessel(analyse)
+                    if schluessel in bekannt:
                         continue
-
-                    # HART: Strasse
-                    strasse = analyse.get(
-                        "strasse"
-                    )
-
-                    if not brauchbare_strasse(
-                        strasse
-                    ):
-                        continue
-
-                    # HART: Ort
-                    wohnort = analyse.get(
-                        "ort"
-                    )
-
-                    if not wohnort:
-                        continue
-
-                    # NEU 9.6:
-                    # nur tatsächlich ausgewählte Orte
-                    if not ort_ist_erlaubt(
-                        wohnort,
-                        suchorte,
-                    ):
-                        continue
-
-                    # HART: Budget
-                    if not ist_innerhalb_budget(
-                        analyse,
-                        max_miete,
-                        parkplatz,
-                    ):
-                        continue
-
-                    # HART: Dublette
-                    schluessel = (
-                        wohnungs_schluessel(
-                            analyse
-                        )
-                    )
-
-                    if (
-                        schluessel
-                        in bekannte_wohnungen
-                    ):
-                        continue
-
-                    bekannte_wohnungen.add(
-                        schluessel
-                    )
-
+                    bekannt.add(schluessel)
                     bewertung = bewerte_wohnung(
-                        analyse=analyse,
-                        suchorte=suchorte,
-                        max_miete=max_miete,
-                        min_zimmer=min_zimmer,
-                        max_zimmer=max_zimmer,
-                        nicht_eg=nicht_eg,
-                        balkon=balkon,
-                        modern=modern,
-                        ruhig=ruhig,
-                        parkplatz=parkplatz,
-                        dusche=dusche,
-                        keine_badewanne=(
-                            keine_badewanne
-                        ),
-                        oev=oev,
-                        steuer=steuer,
-                    )
-
-                    ergebnisse.append(
-                        {
-                            "titel":
-                                analyse.get(
-                                    "titel"
-                                )
-                                or "Mietwohnung",
-
-                            "strasse":
-                                strasse,
-
-                            "ort":
-                                wohnort,
-
-                            "zimmer":
-                                zimmer,
-
-                            "angegebene_miete":
-                                bewertung[
-                                    "angegebene_miete"
-                                ],
-
-                            "nettomiete":
-                                bewertung[
-                                    "nettomiete"
-                                ],
-
-                            "nebenkosten":
-                                bewertung[
-                                    "nebenkosten"
-                                ],
-
-                            "parkplatz_kosten":
-                                bewertung[
-                                    "parkplatz_kosten"
-                                ],
-
-                            "gesamtpreis":
-                                bewertung[
-                                    "gesamtpreis"
-                                ],
-
-                            "steuerfuss":
-                                bewertung[
-                                    "steuerfuss"
-                                ],
-
-                            "match":
-                                bewertung[
-                                    "match"
-                                ],
-
-                            "bestaetigt":
-                                bewertung[
-                                    "bestaetigt"
-                                ],
-
-                            "offen":
-                                bewertung[
-                                    "offen"
-                                ],
-
-                            "details":
-                                bewertung[
-                                    "details"
-                                ],
-
-                            "status":
-                                bewertung[
-                                    "status"
-                                ],
-
-                            "url":
-                                original.get(
-                                    "url"
-                                ),
-
-                            "quelle":
-                                quelle_aus_url(
-                                    original.get(
-                                        "url",
-                                        "",
-                                    )
-                                ),
-
-                            "direktlink": False,
-                        }
-                    )
-
-                statusfeld.write(
-                    "🔗 Direkte Inserat-Links werden gesucht ..."
+                        analyse, suchorte, max_miete, min_zimmer, max_zimmer,
+                        nicht_eg, balkon, modern, ruhig, parkplatz, dusche,
+                        keine_badewanne, oev, steuer)
+                    url = original.get("url", "")
+                    ergebnisse.append({
+                        "titel": analyse.get("titel") or "Mietwohnung",
+                        "strasse": strasse, "ort": wohnort, "zimmer": zimmer,
+                        "angegebene_miete": bewertung["angegebene_miete"],
+                        "nettomiete": bewertung["nettomiete"],
+                        "nebenkosten": bewertung["nebenkosten"],
+                        "parkplatz_kosten": bewertung["parkplatz_kosten"],
+                        "gesamtpreis": bewertung["gesamtpreis"],
+                        "steuerfuss": bewertung["steuerfuss"],
+                        "match": bewertung["match"],
+                        "bestaetigt": bewertung["bestaetigt"],
+                        "offen": bewertung["offen"],
+                        "details": bewertung["details"],
+                        "status": bewertung["status"],
+                        "url": url, "quelle": quelle_aus_url(url),
+                        "direktlink": ist_direktlink(url, strasse),
+                        "detail_status": "Detailprüfung ausstehend",
+                    })
+                    st.session_state.detail_quellen[schluessel] = original
+                    st.session_state.detail_optionen[schluessel] = dict(analyse)
+                st.session_state.suchergebnisse = ergebnisse
+                st.session_state.diagnose = (
+                    f"{len(webtreffer)} Webquellen → {len(analysen)} erkannte Wohnungen "
+                    f"→ {len(ergebnisse)} nach harten Filtern; "
+                    f"Web {suche_ende-beginn:.1f} s, KI {ki_ende-suche_ende:.1f} s, "
+                    f"Stufe 1 gesamt {time.monotonic()-beginn:.1f} s"
                 )
-                fortschritt.progress(92)
+            st.success(f"{len(ergebnisse)} Wohnung(en) gefunden. Die Treffer sind jetzt sichtbar.")
+        except Exception as exc:
+            st.error(f"Suche nicht möglich: {exc}")
 
-                ergebnisse = direkte_links_suchen(
-                    ergebnisse
-                )
-
-                # SORTIERUNG
-                def sortierwert(
-                    x
-                ):
-                    gesamt = x.get(
-                        "gesamtpreis"
-                    )
-
-                    angegeben = x.get(
-                        "angegebene_miete"
-                    )
-
-                    preis = (
-                        gesamt
-                        if gesamt is not None
-                        else angegeben
-                    )
-
-                    return (
-                        gesamt
-                        is not None,
-                        x.get(
-                            "bestaetigt",
-                            0,
-                        ),
-                        -(
-                            preis
-                            if preis is not None
-                            else 99999
-                        ),
-                    )
-
-                ergebnisse.sort(
-                    key=sortierwert,
-                    reverse=True,
-                )
-
-                st.session_state.suchergebnisse = (
-                    ergebnisse
-                )
-
-                fortschritt.progress(
-                    100
-                )
-
-                fortschritt.empty()
-                statusfeld.empty()
-
-                if ergebnisse:
-                    st.success(
-                        f"✅ {len(ergebnisse)} "
-                        "passende Wohnung(en) gefunden."
-                    )
-                else:
-                    st.warning(
-                        "Keine Wohnungen gefunden, "
-                        "die alle harten "
-                        "Suchkriterien erfüllen."
-                    )
-
-        except requests.HTTPError as e:
-            fortschritt.empty()
-            statusfeld.empty()
-
-            st.error(
-                f"Fehler bei der Websuche: {e}"
+if st.session_state.suchergebnisse:
+    if st.button("🔍 Details der gefundenen Wohnungen prüfen", use_container_width=True):
+        beginn = time.monotonic()
+        ergebnisse = st.session_state.suchergebnisse
+        with st.spinner("Inseratseiten und Details werden geprüft ..."):
+            ohne_link = [w for w in ergebnisse if not w.get("direktlink")]
+            if ohne_link:
+                direkte_links_suchen(ohne_link)
+            direkt = [(i, w) for i, w in enumerate(ergebnisse) if w.get("direktlink")]
+            detailtexte = {}
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                futures = {pool.submit(detailseite_laden, w): i for i, w in direkt}
+                for future in as_completed(futures):
+                    i = futures[future]
+                    try:
+                        detailtexte[i] = future.result()
+                    except Exception:
+                        detailtexte[i] = ("", "Detailseite nicht lesbar")
+            laden_ende = time.monotonic()
+            analysen = 0
+            for i, wohnung in enumerate(ergebnisse):
+                schluessel = wohnungs_schluessel(wohnung)
+                analyse = dict(st.session_state.detail_optionen.get(schluessel, {}))
+                text, status = detailtexte.get(i, ("", "kein sicherer Direktlink"))
+                if not text:
+                    original = st.session_state.detail_quellen.get(schluessel, {})
+                    # Provider-Text nur, wenn er dieser Wohnung eindeutig gehört.
+                    text = wohnungsspezifischer_text(wohnung, original)
+                    if text:
+                        status = "Suchprovider-Text geprüft"
+                if text:
+                    original = {"title": wohnung.get("titel", ""), "content": text,
+                                "raw_content": ""}
+                    analyse = lokale_preiskontrolle(analyse, original)
+                    analyse = lokale_textkontrolle(analyse, original)
+                    try:
+                        detail = detailanalyse(wohnung, text)
+                        for k, v in detail.items():
+                            if v is not None and analyse.get(k) is None:
+                                analyse[k] = v
+                        analysen += 1
+                    except Exception:
+                        pass
+                analyse = preise_bereinigen(analyse)
+                bewertung = bewerte_wohnung(
+                    analyse, suchorte, max_miete, min_zimmer, max_zimmer,
+                    nicht_eg, balkon, modern, ruhig, parkplatz, dusche,
+                    keine_badewanne, oev, steuer)
+                for feld in ("angegebene_miete", "nettomiete", "nebenkosten",
+                             "parkplatz_kosten", "gesamtpreis", "steuerfuss",
+                             "match", "bestaetigt", "offen", "details", "status"):
+                    wohnung[feld] = bewertung[feld]
+                wohnung["detail_status"] = status
+                wohnung["mietpreis_art"] = analyse.get("mietpreis_art")
+                # Nur sicher bekannte Gesamtkosten über dem Budget ausschließen.
+                wohnung["budget_ueberschritten"] = not ist_innerhalb_budget(
+                    analyse, max_miete, parkplatz)
+            st.session_state.suchergebnisse = [
+                w for w in ergebnisse if not w.get("budget_ueberschritten")]
+            st.session_state.detail_diagnose = (
+                f"Detailseiten {len(direkt)}, davon gelesen "
+                f"{sum(bool(t) for t, _ in detailtexte.values())}; "
+                f"KI-Detailanalysen {analysen}; Laden {laden_ende-beginn:.1f} s, "
+                f"Stufe 2 gesamt {time.monotonic()-beginn:.1f} s"
             )
+        st.success("Detailprüfung abgeschlossen.")
 
-        except Exception as e:
-            fortschritt.empty()
-            statusfeld.empty()
-
-            st.error(
-                f"Suche nicht möglich: {e}"
-            )
+if st.session_state.get("diagnose"):
+    st.caption("Diagnose Stufe 1: " + st.session_state.diagnose)
+if st.session_state.get("detail_diagnose"):
+    st.caption("Diagnose Stufe 2: " + st.session_state.detail_diagnose)
 
 
 # =========================================================
@@ -2136,6 +2006,12 @@ else:
                 f"{gesamtpreis:,.0f}"
             )
 
+        elif netto is not None and nk is not None:
+            preis_text = (
+                f"Netto CHF {netto:,.0f} + NK CHF {nk:,.0f} "
+                f"= CHF {angegebene_miete:,.0f}; Parkplatz offen"
+            )
+
         elif angegebene_miete is not None:
             preis_text = (
                 f"Miete CHF "
@@ -2197,6 +2073,7 @@ else:
                 f"**Status:** "
                 f"{status_text}"
             )
+            st.caption(wohnung.get("detail_status", "Detailprüfung ausstehend"))
 
             st.write(
                 f"**Strasse:** "
@@ -2764,7 +2641,7 @@ else:
 st.divider()
 
 st.caption(
-    "Wohnungs-Finder Schweiz – Version 9.8 – automatische "
+    "Wohnungs-Finder Schweiz – Version 9.9 – automatische "
     "Websuche mit Tavily und KI-Auswertung. "
     "Nur ausgewählte Orte werden berücksichtigt. "
     "Maximalbudget inkl. bekannten Nebenkosten und "
