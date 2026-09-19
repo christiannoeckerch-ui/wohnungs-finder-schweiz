@@ -17,6 +17,7 @@ import streamlit as st
 SEARCH_URL = "https://api.tavily.com/search"
 EXTRACT_URL = "https://api.tavily.com/extract"
 PORTALS = ("homegate.ch", "immoscout24.ch", "newhome.ch", "flatfox.ch")
+SWISS_SITES = PORTALS + ("comparis.ch", "home.ch", "homematch.ch", "realadvisor.ch", "alle-immobilien.ch", "immostreet.ch")
 FIELDS = ("Strasse + Hausnummer", "PLZ / Gemeinde", "Zimmer", "sichtbare Miete", "Nettomiete", "Nebenkosten", "Bruttomiete")
 
 
@@ -28,21 +29,21 @@ def classify(url: str, title: str = "", snippet: str = "") -> tuple[str, str]:
     """Conservative URL-first heuristic; content is only supporting evidence."""
     path = urlsplit(url).path.lower().rstrip("/")
     query = urlsplit(url).query.lower()
-    listing = re.search(r"/(?:rent|mieten|wohnung-mieten|immobilien|objekt|property|listing|expose|angebot)/[^/]+", path)
-    identifier = re.search(r"(?:/|[-_])\d{5,}(?:$|[/?-])|(?:listing|object|property|id)=\d+", path + "?" + query)
-    overview = re.search(r"/(?:search|suche|suchen|result|results|angebote|mieten|rent)(?:/)?$", path)
-    overview_query = re.search(r"(?:location|rooms|price|maxrent|sort|page)=", query)
-    if identifier or (listing and path.count("/") >= 2):
-        return "wahrscheinlich Einzelinserat", "URL enthält einen Objektpfad oder eine Objekt-ID"
-    if overview or overview_query or path in ("", "/"):
-        return "wahrscheinlich Übersichtsseite", "URL wirkt wie Suche, Ergebnisliste oder Portalstartseite"
+    overview_query = re.search(r"(?:^|&)(?:location|rooms|price|maxrent|sort|page|pagenum)=", query)
+    overview_path = re.search(r"(?:/search|/suche|/suchen|/results?|/angebote)(?:/|$)|/(?:city|plz|ort|region)-[^/]+$|/in-[^/]+$", path)
+    overview_title = re.search(r"\b\d+\s+(?:wohnungen?|apartments?|flats?|immobilien|treffer|angebote)\b|\b(?:seite|page)\s*\d+\b", title, re.I)
+    if overview_query or overview_path or overview_title or path in ("", "/"):
+        return "wahrscheinlich Übersichtsseite", "Such-/Orts-URL oder Titel nennt eine Trefferliste"
+    identifier = re.search(r"/(?:[1-9]\d{6,})(?:$|[/?])|(?:listing|object|property|id)=[1-9]\d{5,}", path + "?" + query)
+    if identifier:
+        return "wahrscheinlich Einzelinserat", "URL enthält eine konkrete Objekt-ID"
     if re.search(r"\b(?:wohnung|zimmer|chf|miete)\b", title + " " + snippet, re.I):
         return "unklar", "Wohnungsbezug im Text, aber kein eindeutiger Objektpfad"
     return "unklar", "URL und Suchtext erlauben keine sichere Zuordnung"
 
 
 def _money(value: str) -> str:
-    return re.sub(r"[^\d]", "", value)
+    return re.sub(r"[^\d]", "", re.split(r"[.,](?=\d{2}(?:\D|$))", value)[0])
 
 
 def parse_fields(raw: str) -> dict[str, str]:
@@ -52,13 +53,13 @@ def parse_fields(raw: str) -> dict[str, str]:
     street = re.search(r"\b([A-ZÄÖÜ][\wäöüÄÖÜéèàâêîôûÉÈÀÂÊÎÔÛ.' -]{2,55}?(?:strasse|straße|str\.?|weg|gasse|platz|allee|rain|ring|hof)\s*\d+[a-zA-Z]?)\b", text, re.I)
     if street:
         result["Strasse + Hausnummer"] = street.group(1).strip()
-    place = re.search(r"\b([1-9]\d{3})\s+([A-ZÄÖÜ][a-zäöüéèàâêîôû-]+(?:\s+[A-ZÄÖÜ][a-zäöüéèàâêîôû-]+){0,2})\b", text)
+    place = re.search(r"\b([1-9]\d{3})\s+([A-ZÄÖÜ][a-zäöüéèàâêîôû-]+(?:\s+(?:BL|AG|BS|SO|ZH|BE|LU|SZ|ZG|SG|GR|TI|VD|GE|FR|NE|JU|TG|SH|AR|AI|GL|NW|OW|UR|VS))?)\b", text)
     if place:
         result["PLZ / Gemeinde"] = f"{place.group(1)} {place.group(2).strip()}"
     rooms = re.search(r"\b(\d(?:[.,]5)?)\s*(?:zimmer|zi\.?|rooms?)\b|\b(?:zimmer|zi\.?)\s*[:\-]?\s*(\d(?:[.,]5)?)\b", text, re.I)
     if rooms:
         result["Zimmer"] = (rooms.group(1) or rooms.group(2)).replace(",", ".")
-    amount = r"(?:CHF\s*)?([\d'’ .]{3,8})(?:\s*(?:CHF|Fr\.?|/\s*(?:Mt\.?|Monat)))?"
+    amount = r"(?:CHF\s*)?([1-9]\d{0,2}(?:['’ ]\d{3})+|[1-9]\d{2,4})(?:[.,]\d{2})?"
     labels = {
         "Nettomiete": r"(?:nettomiete|netto\s*miete)",
         "Nebenkosten": r"(?:nebenkosten|nk)",
@@ -78,12 +79,12 @@ def parse_fields(raw: str) -> dict[str, str]:
     return result
 
 
-def queries(gemeinde: str, minimum: float, maximum: float, price: int) -> list[str]:
-    criteria = f'"{gemeinde}" Mietwohnung {minimum:g} {maximum:g} Zimmer CHF {price}'
+def queries(gemeinde: str, minimum: float, maximum: float, price: int) -> list[tuple[str, list[str]]]:
+    criteria = f'"{gemeinde}" Mietwohnung {minimum:g} {maximum:g} Zimmer bis {price} Franken'
     return [
-        f"{criteria} Inserat Adresse",
-        f'"{gemeinde}" Wohnung mieten {minimum:g} bis {maximum:g} Zimmer bis {price} Franken',
-        *[f"site:{portal} {criteria} Wohnung mieten" for portal in PORTALS],
+        (f"{criteria} Inserat Adresse", list(SWISS_SITES)),
+        (f'"{gemeinde}" Wohnung mieten {minimum:g} bis {maximum:g} Zimmer bis {price} Franken', list(SWISS_SITES)),
+        *[(f"{criteria} Wohnung mieten", [portal]) for portal in PORTALS],
     ]
 
 
@@ -101,17 +102,17 @@ def post_tavily(endpoint: str, payload: dict, api_key: str) -> dict:
     return data
 
 
-def run_search(api_key: str, search_queries: list[str]) -> tuple[list[dict], list[dict], int]:
+def run_search(api_key: str, search_queries: list[tuple[str, list[str]]]) -> tuple[list[dict], list[dict], int]:
     results, calls, seen = [], [], set()
-    for query in search_queries:
+    for query, domains in search_queries:
         try:
             data = post_tavily(SEARCH_URL, {
                 "query": query, "search_depth": "basic", "topic": "general",
                 "max_results": 10, "include_answer": False, "include_raw_content": False,
-                "include_usage": True,
+                "include_usage": True, "include_domains": domains,
             }, api_key)
             found = data.get("results") or []
-            calls.append({"query": query, "returned": len(found), "usage": data.get("usage"), "error": ""})
+            calls.append({"query": query, "Domains": ", ".join(domains), "returned": len(found), "usage": data.get("usage"), "error": ""})
             for hit in found:
                 url = hit.get("url", "")
                 if not url or url in seen:
@@ -123,7 +124,7 @@ def run_search(api_key: str, search_queries: list[str]) -> tuple[list[dict], lis
                                 "reason": reason, "query": query, "extract": "nicht versucht",
                                 "raw": "", "fields": None})
         except (requests.RequestException, ValueError) as exc:
-            calls.append({"query": query, "returned": 0, "usage": None, "error": str(exc)})
+            calls.append({"query": query, "Domains": ", ".join(domains), "returned": 0, "usage": None, "error": str(exc)})
     return results, calls, sum(call["returned"] for call in calls)
 
 
@@ -176,14 +177,17 @@ def portal_summary(results: list[dict]) -> list[dict]:
     for portal, rows in sorted(groups.items()):
         individual = sum(row["category"] == "wahrscheinlich Einzelinserat" for row in rows)
         extracted = sum(row["extract"].startswith("erfolgreich") for row in rows)
-        address = sum(bool(row["fields"] and row["fields"]["Strasse + Hausnummer"] != "nicht erkannt"
+        address = sum(bool(row["category"] == "wahrscheinlich Einzelinserat" and row["fields"] and row["fields"]["Strasse + Hausnummer"] != "nicht erkannt"
                            and row["fields"]["PLZ / Gemeinde"] != "nicht erkannt") for row in rows)
-        rooms = sum(bool(row["fields"] and row["fields"]["Zimmer"] != "nicht erkannt") for row in rows)
-        price = sum(bool(row["fields"] and row["fields"]["sichtbare Miete"] != "nicht erkannt") for row in rows)
+        rooms = sum(bool(row["category"] == "wahrscheinlich Einzelinserat" and row["fields"] and row["fields"]["Zimmer"] != "nicht erkannt") for row in rows)
+        price = sum(bool(row["category"] == "wahrscheinlich Einzelinserat" and row["fields"] and row["fields"]["sichtbare Miete"] != "nicht erkannt") for row in rows)
+        usable = sum(bool(row["category"] == "wahrscheinlich Einzelinserat" and row["fields"]
+                          and all(row["fields"][field] != "nicht erkannt" for field in
+                                  ("Strasse + Hausnummer", "PLZ / Gemeinde", "Zimmer", "sichtbare Miete"))) for row in rows)
         output.append({"Domain": portal, "Suchresultate": len(rows), "wahrscheinlich Einzelinserate": individual,
                        "Extract erfolgreich": extracted, "Adresse erkannt": address,
                        "Zimmer erkannt": rooms, "Preis erkannt": price,
-                       "brauchbare Direktlinks": f"{individual / len(rows):.0%}"})
+                       "brauchbare Direktlinks": f"{usable / len(rows):.0%}"})
     return output
 
 
@@ -230,7 +234,7 @@ def main() -> None:
                 if isinstance(call.get("usage"), dict) and isinstance(call["usage"].get("credits"), (int, float))]
     st.write(f"Von Tavily gemeldete Credits: {sum(reported)}" if reported else "Tavily hat keine Credit-Zahl geliefert; Aufrufzahlen stehen oben.")
     st.subheader("Portal-Zusammenfassung")
-    st.caption("Brauchbare Direktlinks = Anteil der anhand der URL wahrscheinlich konkreten Inserate; keine Bestätigung der Aktualität oder Extrahierbarkeit.")
+    st.caption("Brauchbare Direktlinks = Anteil aller Suchresultate mit konkreter Objekt-URL, erfolgreichem Extract sowie erkannter Adresse, Zimmerzahl und Miete. Nur Indizien, keine Bestätigung der Aktualität.")
     st.dataframe(portal_summary(results), use_container_width=True, hide_index=True)
     st.subheader("Alle Suchresultate")
     if not results:
@@ -243,6 +247,7 @@ def main() -> None:
             st.write("**Klassifikation:**", row["category"], "—", row["reason"])
             st.write("**Extract:**", row["extract"])
             if row["fields"]:
+                st.caption("Feldwerte sind Texttreffer auf dieser Seite. Bei Übersichtsseiten können sie zu verschiedenen Wohnungen gehören.")
                 for field, value in row["fields"].items():
                     st.write(f"**{field}:** {value}")
                 st.text_area("Rohtext-Ausschnitt (erste 3000 Zeichen)", row["raw"][:3000], height=180, key=f"raw_{index}")
