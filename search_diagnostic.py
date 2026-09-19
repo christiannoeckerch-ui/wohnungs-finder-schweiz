@@ -31,7 +31,7 @@ def classify(url: str, title: str = "", snippet: str = "") -> tuple[str, str]:
     query = urlsplit(url).query.lower()
     overview_query = re.search(r"(?:^|&)(?:location|rooms|price|maxrent|sort|page|pagenum)=", query)
     overview_path = re.search(r"(?:/search|/suche|/suchen|/results?|/angebote)(?:/|$)|/(?:city|plz|ort|region)-[^/]+$|/in-[^/]+$", path)
-    overview_title = re.search(r"\b\d+\s+(?:wohnungen?|apartments?|flats?|immobilien|treffer|angebote)\b|\b(?:seite|page)\s*\d+\b", title, re.I)
+    overview_title = re.search(r"\b\d+\s+(?:wohnung(?:en)?|apartments?|flats?|immobilien|treffer|angebote)\b|\b(?:seite|page)\s*\d+\b", title, re.I)
     if overview_query or overview_path or overview_title or path in ("", "/"):
         return "wahrscheinlich Übersichtsseite", "Such-/Orts-URL oder Titel nennt eine Trefferliste"
     identifier = re.search(r"/(?:[1-9]\d{6,})(?:$|[/?])|(?:listing|object|property|id)=[1-9]\d{5,}", path + "?" + query)
@@ -56,9 +56,10 @@ def parse_fields(raw: str) -> dict[str, str]:
     place = re.search(r"\b([1-9]\d{3})\s+([A-ZÄÖÜ][a-zäöüéèàâêîôû-]+(?:\s+(?:BL|AG|BS|SO|ZH|BE|LU|SZ|ZG|SG|GR|TI|VD|GE|FR|NE|JU|TG|SH|AR|AI|GL|NW|OW|UR|VS))?)\b", text)
     if place:
         result["PLZ / Gemeinde"] = f"{place.group(1)} {place.group(2).strip()}"
-    rooms = re.search(r"\b(\d(?:[.,]5)?)\s*(?:zimmer|zi\.?|rooms?)\b|\b(?:zimmer|zi\.?)\s*[:\-]?\s*(\d(?:[.,]5)?)\b", text, re.I)
+    rooms = re.search(r"\b(\d(?:[.,]5|\s*½|\s+1/2)?)\s*(?:zimmer|zi\.?|rooms?)\b|\b(?:zimmer|zi\.?)\s*[:\-]?\s*(\d(?:[.,]5|\s*½|\s+1/2)?)\b", text, re.I)
     if rooms:
-        result["Zimmer"] = (rooms.group(1) or rooms.group(2)).replace(",", ".")
+        value = (rooms.group(1) or rooms.group(2)).strip()
+        result["Zimmer"] = re.sub(r"\s*(?:½|1/2)$", ".5", value).replace(",", ".")
     amount = r"(?:CHF\s*)?([1-9]\d{0,2}(?:['’ ]\d{3})+|[1-9]\d{2,4})(?:[.,]\d{2})?"
     labels = {
         "Nettomiete": r"(?:nettomiete|netto\s*miete)",
@@ -128,8 +129,18 @@ def run_search(api_key: str, search_queries: list[tuple[str, list[str]]]) -> tup
     return results, calls, sum(call["returned"] for call in calls)
 
 
-def run_extract(api_key: str, results: list[dict], max_urls: int, advanced_limit: int) -> list[dict]:
+def run_extract(api_key: str, results: list[dict], max_urls: int, advanced_limit: int, gemeinde: str) -> list[dict]:
     candidates = [row for row in results if row["category"] != "wahrscheinlich Übersichtsseite"]
+    locality = gemeinde.casefold().replace(" ", "-")
+    def priority(row: dict) -> tuple[int, int]:
+        text = (row["url"] + " " + row["title"]).casefold()
+        local = gemeinde.casefold() in text or locality in text
+        if gemeinde == "Reinach BL":
+            local = local or "4153" in text
+        direct = row["category"] == "wahrscheinlich Einzelinserat"
+        relevant_domain = any(row["domain"] == site or row["domain"].endswith("." + site) for site in SWISS_SITES)
+        return (0 if relevant_domain else 1, 0 if direct and local else 1 if direct else 2 if local else 3)
+    candidates.sort(key=priority)
     selected = candidates[:max_urls]
     for row in candidates[max_urls:]:
         row["extract"] = "nicht versucht: URL-Limit erreicht"
@@ -225,7 +236,7 @@ def main() -> None:
         return
     with st.spinner("Tavily Search und Extract laufen …"):
         results, search_calls, returned = run_search(api_key, queries(gemeinde, minimum, maximum, price))
-        extract_calls = run_extract(api_key, results, max_urls, advanced_limit)
+        extract_calls = run_extract(api_key, results, max_urls, advanced_limit, gemeinde)
     st.subheader("API-Aufwand und Suchanfragen")
     st.write(f"{len(search_calls)} Search-Aufrufe · {returned} rohe Treffer · {len(results)} eindeutige exakte URLs · {len(extract_calls)} Extract-Aufrufe")
     st.dataframe(search_calls, use_container_width=True, hide_index=True)
