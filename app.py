@@ -64,9 +64,12 @@ def sichere_float_zahl(wert):
         if isinstance(wert, str):
             wert = wert.replace("'", "")
             wert = wert.replace("’", "")
-            wert = wert.replace(",", "")
             wert = wert.replace("CHF", "")
             wert = wert.strip()
+            if re.fullmatch(r"\d{1,3}(?:[., ]\d{3})+", wert):
+                wert = re.sub(r"[., ]", "", wert)
+            else:
+                wert = wert.replace(",", ".")
 
         return float(wert)
 
@@ -929,9 +932,144 @@ def schnelle_wohnungen(treffer):
     return json.loads(antwort.output_text.strip().removeprefix("```json").removesuffix("```").strip()).get("wohnungen", [])
 
 
+# VERSION 10.0.1 – Kandidaten zuerst ohne Detail-KI erkennen.
+ADRESS_MUSTER = re.compile(
+    r"\b([A-ZÄÖÜ][A-Za-zÄÖÜäöüßéèà.\-]*"
+    r"(?:strasse|straße|str\.?|weg|gasse|allee|platz|ring)\s*\d+[a-zA-Z]?)\b",
+    re.IGNORECASE,
+)
+ZIMMER_MUSTER = re.compile(r"\b(\d(?:[.,]5|\s*½)?)\s*(?:[- ]?zimmer|zi\.?\b|rooms?\b)", re.IGNORECASE)
+CHF_MUSTER = re.compile(r"\bCHF\s*([1-9]\d{0,3}(?:['’., ]\d{3})?)\b", re.IGNORECASE)
+
+
+def einzeltext_der_quelle(quelle):
+    """Nutzt Rohtext nur, wenn Titel und Snippet keine Adresse belegen."""
+    kern = " ".join(str(quelle.get(k) or "") for k in ("title", "content"))
+    kern_adressen = {normalisiere_text(m.group(1)) for m in ADRESS_MUSTER.finditer(kern)}
+    if len(kern_adressen) > 1:
+        return ""
+    if len(kern_adressen) == 1:
+        return kern
+    raw = str(quelle.get("raw_content") or "")[:3500]
+    raw_adressen = {normalisiere_text(m.group(1)) for m in ADRESS_MUSTER.finditer(raw)}
+    return " ".join((kern, raw)) if len(raw_adressen) == 1 else ""
+
+
+def kandidaten_aus_snippets(quellen, suchorte):
+    """Extrahiert nur eine Wohnung pro eindeutigem Suchtreffer.
+
+    Listen mit mehreren Adressen werden übersprungen; ihre Preise und
+    Gemeinden dürfen nie miteinander kombiniert werden.
+    """
+    kandidaten = []
+    for quelle in quellen:
+        titel = str(quelle.get("title") or "")
+        inhalt = str(quelle.get("content") or "")
+        text = einzeltext_der_quelle(quelle)
+        raw = str(quelle.get("raw_content") or "")[:3500] if text != " ".join((titel, inhalt)) else ""
+        adressen = {normalisiere_text(m.group(1)): m.group(1).strip()
+                    for m in ADRESS_MUSTER.finditer(text)}
+        if len(adressen) != 1:
+            continue
+        strasse = next(iter(adressen.values()))
+        # Ort muss am selben Adressvorkommen stehen. Die erste Quelle
+        # (Titel/Snippet) hat Vorrang vor längeren Seitentexten.
+        ort = None
+        for teil in (titel, inhalt, raw):
+            for m in ADRESS_MUSTER.finditer(teil):
+                if normalisiere_text(m.group(1)) != normalisiere_text(strasse):
+                    continue
+                # Der nächststehende Ort nach der Adresse ist massgeblich.
+                # Ein anderer Ort weiter unten darf ihn nicht überschreiben.
+                nach = teil[m.end():m.end()+65]
+                ortspositionen = [(x.start(), normalisiere_ort(o)) for o in suchorte
+                                 for x in re.finditer(r"\b" + re.escape(normalisiere_ort(o)) + r"\b",
+                                                      nach, re.IGNORECASE)]
+                if ortspositionen:
+                    ort = min(ortspositionen)[1]
+                    break
+                vorher = teil[max(0, m.start()-55):m.start()]
+                ortspositionen = [(len(vorher)-x.end(), normalisiere_ort(o)) for o in suchorte
+                                 for x in re.finditer(r"\b" + re.escape(normalisiere_ort(o)) + r"\b",
+                                                      vorher, re.IGNORECASE)]
+                if ortspositionen:
+                    ort = min(ortspositionen)[1]
+                    break
+            if ort:
+                break
+        if not ort:
+            continue
+        zimmer = ZIMMER_MUSTER.search(text)
+        if not zimmer:
+            continue
+        zimmerwert = zimmer.group(1).replace("½", ".5").replace(" ", "")
+        zimmerzahl = sichere_float_zahl(zimmerwert)
+        # Nur ein sichtbarer Wohnmietpreis ist budgetrelevant. Ein einzelner
+        # unbeschrifteter CHF-Wert bleibt zur Sicherheit preislich offen.
+        mietwerte = []
+        for m in CHF_MUSTER.finditer(text):
+            davor = text[max(0, m.start()-65):m.start()].lower()
+            alle_label = list(re.finditer(
+                r"(?:netto\s*|brutto\s*|gesamt\s*)?(?:miete|mietzins|rent|preis|price)"
+                r"|(?:parkplatz|garage|einstellplatz|nebenkosten|\bnk\b)", davor))
+            label = alle_label[-1] if alle_label else None
+            if label and m.start() - (max(0, m.start()-65) + label.end()) <= 22:
+                preis = sichere_float_zahl(m.group(1))
+                bezeichnung = label.group(0)
+                if (preis is not None
+                        and re.search(r"miete|mietzins|rent|preis|price", bezeichnung)
+                        and not re.search(r"netto|exkl|without", bezeichnung)):
+                    mietwerte.append(preis)
+        preis = mietwerte[0] if len(set(mietwerte)) == 1 else None
+        kandidaten.append({
+            "treffer_id": quelle["_interne_id"], "titel": titel,
+            "strasse": strasse, "ort": ort, "zimmer": zimmerzahl,
+            "angegebene_miete": preis,
+            "mietpreis_art": "unbekannt", "einzelwohnung_sicher": True,
+        })
+    return kandidaten
+
+
+def stufe1_kandidaten(quellen, suchorte):
+    """Paket-KI aus 9.x nur bei leerem schnellem Durchgang verwenden."""
+    original_nach_id = {t["_interne_id"]: t for t in quellen}
+
+    def belegte_liste(liste):
+        if not isinstance(liste, list):
+            return []
+        belegt = []
+        for w in liste:
+            if not isinstance(w, dict) or not w.get("einzelwohnung_sicher"):
+                continue
+            try:
+                quelle = original_nach_id[int(w.get("treffer_id"))]
+            except (KeyError, ValueError, TypeError):
+                continue
+            if belegter_einzelner_treffer(w, quelle):
+                belegt.append(w)
+        return belegt
+
+    parser = belegte_liste(kandidaten_aus_snippets(quellen, suchorte))
+    schnell_ki, fallback = [], []
+    if not parser:
+        try:
+            schnell_ki = schnelle_wohnungen(tuple(
+                json.dumps(t, ensure_ascii=False, sort_keys=True) for t in quellen))
+        except Exception:
+            pass
+        schnell_ki = belegte_liste(schnell_ki)
+    if not parser and not schnell_ki:
+        try:
+            fallback = ki_extrahiere_paket(quellen)
+        except Exception:
+            pass
+        fallback = belegte_liste(fallback)
+    return parser or schnell_ki or fallback, len(parser), len(schnell_ki), len(fallback)
+
+
 def belegter_einzelner_treffer(analyse, quelle):
     """Reject list pages and claims not actually present in the same result."""
-    text = " ".join(str(quelle.get(k) or "") for k in ("title", "content"))
+    text = einzeltext_der_quelle(quelle)
     addr = normalisiere_text(analyse.get("strasse"))
     town = normalisiere_text(normalisiere_ort(analyse.get("ort")))
     norm = normalisiere_text(text)
@@ -940,12 +1078,20 @@ def belegter_einzelner_treffer(analyse, quelle):
     # The municipality must be tied to this address, not another result on
     # the same page.
     address_at = norm.find(addr)
-    if town not in norm[max(0, address_at - 100):address_at + len(addr) + 100]:
+    if town not in norm[max(0, address_at - 70):address_at + len(addr) + 70]:
         return False
-    addresses = {normalisiere_text(x) for x in re.findall(
-        r"\b[A-ZÄÖÜ][\wäöüÄÖÜß.\- ]{2,45}?(?:strasse|straße|weg|gasse|allee|platz|ring)\s+\d+[a-zA-Z]?\b",
-        text, flags=re.IGNORECASE)}
-    if any(addr not in candidate for candidate in addresses):
+    # Eine direkt an der Adresse stehende Gemeinde hat Vorrang vor
+    # Ortsnamen aus Überschrift, Navigation oder einem anderen Inserat.
+    address_match = re.search(re.escape(str(analyse.get("strasse"))), text, re.IGNORECASE)
+    if address_match:
+        direkt_danach = text[address_match.end():address_match.end()+55]
+        lokale_orte = [(m.start(), normalisiere_text(g))
+                       for g in STEUERFUESSE_BL_2026
+                       for m in re.finditer(r"\b" + re.escape(g) + r"\b", direkt_danach, re.IGNORECASE)]
+        if lokale_orte and min(lokale_orte)[1] != town:
+            return False
+    addresses = {normalisiere_text(m.group(1)) for m in ADRESS_MUSTER.finditer(text)}
+    if len(addresses) > 1:
         return False
     price = sichere_float_zahl(analyse.get("angegebene_miete"))
     if price is not None:
@@ -1146,6 +1292,7 @@ def ist_innerhalb_budget(
             "angegebene_miete"
         )
     )
+    netto = sichere_float_zahl(analyse.get("nettomiete"))
 
     brutto = bekannte_wohnkosten(
         analyse
@@ -1157,22 +1304,11 @@ def ist_innerhalb_budget(
         )
     )
 
-    # Bereits die bekannte Miete
-    # überschreitet das Budget.
-    if (brutto is not None and brutto > max_miete) or (angegeben is not None and angegeben > max_miete):
+    # Parkplatz ist ein Wunschmerkmal, kein harter Suchfilter.
+    if ((brutto is not None and brutto > max_miete)
+            or (angegeben is not None and angegeben > max_miete)
+            or (netto is not None and netto > max_miete)):
         return False
-
-    # Bruttomiete + Parkplatz bekannt.
-    if (
-        parkplatz_gewuenscht
-        and brutto is not None
-        and park is not None
-    ):
-        if (
-            brutto + park
-            > max_miete
-        ):
-            return False
 
     return True
 
@@ -1813,18 +1949,18 @@ if st.button("🔎 Wohnungen suchen", type="primary", use_container_width=True):
                             f"{max_zimmer:g} Zimmer Miete maximal CHF {max_miete:g}")
                 webtreffer = tavily_suche(suchtext, max_results=10)
                 eindeutig = {t.get("url"): t for t in webtreffer if t.get("url")}
-                quellen = list(eindeutig.values())[:8]
+                quellen = list(eindeutig.values())[:10]
                 for nr, t in enumerate(quellen, 1):
                     t["_interne_id"] = nr
                 suche_ende = time.monotonic()
-                try:
-                    analysen = schnelle_wohnungen(tuple(json.dumps(t, ensure_ascii=False, sort_keys=True) for t in quellen))
-                except Exception:
-                    analysen = []
+                analysen, parser_anzahl, ki_anzahl, fallback_anzahl = stufe1_kandidaten(
+                    quellen, suchorte)
                 ki_ende = time.monotonic()
 
                 original_nach_id = {t["_interne_id"]: t for t in quellen}
                 ergebnisse, bekannt = [], set()
+                ausschluss = {"adresse": sum(not einzeltext_der_quelle(t) for t in quellen),
+                             "ort": 0, "zimmer": 0, "budget": 0}
                 for analyse in analysen:
                     if not analyse.get("einzelwohnung_sicher", False):
                         continue
@@ -1833,16 +1969,23 @@ if st.button("🔎 Wohnungen suchen", type="primary", use_container_width=True):
                     except (KeyError, ValueError, TypeError):
                         continue
                     if not belegter_einzelner_treffer(analyse, original):
+                        ausschluss["adresse"] += 1
                         continue
                     zimmer = sichere_float_zahl(analyse.get("zimmer"))
                     strasse, wohnort = analyse.get("strasse"), analyse.get("ort")
-                    if (zimmer is None or not min_zimmer <= zimmer <= max_zimmer
-                            or not brauchbare_strasse(strasse) or not wohnort
-                            or not ort_ist_erlaubt(wohnort, suchorte)):
+                    if not brauchbare_strasse(strasse):
+                        ausschluss["adresse"] += 1
+                        continue
+                    if not wohnort or not ort_ist_erlaubt(wohnort, suchorte):
+                        ausschluss["ort"] += 1
+                        continue
+                    if zimmer is None or not min_zimmer <= zimmer <= max_zimmer:
+                        ausschluss["zimmer"] += 1
                         continue
                     analyse = lokale_preiskontrolle(analyse, original)
                     analyse = preise_bereinigen(analyse)
                     if not ist_innerhalb_budget(analyse, max_miete, parkplatz):
+                        ausschluss["budget"] += 1
                         continue
                     schluessel = wohnungs_schluessel(analyse)
                     if schluessel in bekannt:
@@ -1875,8 +2018,11 @@ if st.button("🔎 Wohnungen suchen", type="primary", use_container_width=True):
                     st.session_state.detail_optionen[schluessel] = dict(analyse)
                 st.session_state.suchergebnisse = ergebnisse
                 st.session_state.diagnose = (
-                    f"{len(webtreffer)} Webquellen → {len(analysen)} erkannte Wohnungen "
-                    f"→ {len(ergebnisse)} nach harten Filtern; "
+                    f"{len(webtreffer)} Webquellen; Schnellparser {parser_anzahl}; "
+                    f"KI {ki_anzahl}; Fallback {fallback_anzahl}; "
+                    f"Ausschlüsse/fehlende Angaben: Adresse {ausschluss['adresse']}, Ort {ausschluss['ort']}, "
+                    f"Zimmer {ausschluss['zimmer']}, sicheres Budget {ausschluss['budget']}; "
+                    f"final {len(ergebnisse)}; "
                     f"Web {suche_ende-beginn:.1f} s, KI {ki_ende-suche_ende:.1f} s, "
                     f"Stufe 1 gesamt {time.monotonic()-beginn:.1f} s"
                 )
@@ -2048,7 +2194,7 @@ else:
 
         else:
             preis_text = (
-                "Preis noch unbekannt"
+                "Preis offen"
             )
 
         kopf = (
@@ -2682,10 +2828,10 @@ else:
 st.divider()
 
 st.caption(
-    "Wohnungs-Finder Schweiz – Version 10.0 – automatische "
+    "Wohnungs-Finder Schweiz – Version 10.0.1 – automatische "
     "Websuche mit Tavily und KI-Auswertung. "
     "Nur ausgewählte Orte werden berücksichtigt. "
-    "Maximalbudget inkl. bekannten Nebenkosten und "
-    "Parkplatz wird als harter Filter verwendet. "
+    "Sicher bekannte Wohnmiete über dem Maximalbudget "
+    "wird ausgeschlossen. "
     "Angaben immer im Originalinserat überprüfen."
 )
