@@ -1,4 +1,4 @@
-"""Wohnungs-Finder Schweiz V12.7. Run with: streamlit run app.py"""
+"""Wohnungs-Finder Schweiz V12.8. Run with: streamlit run app.py"""
 import json
 import html
 import re
@@ -156,17 +156,17 @@ def parse_detail_text(text, item):
     def money(label):
         m = re.search(label + r"\s*:?\s*(?:CHF\s*)?" + amount, text, re.I)
         return number(m.group(1)) if m else None
-    net = money(r"(?:Mietpreis\s*exkl\.?\s*(?:NK|Nebenkosten)|Nettomiete|Netto-Miete)")
+    net = money(r"(?:Mietpreis\s*exkl\.?\s*(?:NK|Nebenkosten)|Nettomiete(?:\s*\([^)]*\))?|Netto-Miete)")
     charges = money(r"(?:Nebenkosten|Additional expenses)")
     if charges is None:
         without_exkl = re.sub(r"Mietpreis\s*exkl\.?\s*NK", "", text, flags=re.I)
         m = re.search(r"\bNK\b\s*:?\s*(?:CHF\s*)?" + amount, without_exkl, re.I)
         charges = number(m.group(1)) if m else None
-    gross = money(r"(?:Bruttomiete|Brutto-Miete|Gesamtmiete|Mietpreis(?!\s*exkl)|\bMiete\b)")
+    gross = money(r"(?:Bruttomiete(?:\s*\([^)]*\))?|Brutto-Miete|Gesamtmiete|Mietpreis(?!\s*exkl)|\bMiete\b)")
     if net is not None and charges is not None:
         computed = net + charges
         gross = computed if gross is None or abs(gross - computed) <= 1 else None
-    floor = re.search(r"\b(?:im\s+)?(\d+)\.\s*(?:Stock|Obergeschoss|OG)\b", text, re.I)
+    floor = re.search(r"\b(?:im\s+)?(\d+)\.\s*(?:Stock|Obergeschoss|OG|Etage)\b", text, re.I)
     patterns = {
         "Balkon / Terrasse": r"\b(?:Balkon|Terrasse)\b",
         "Parkplatz vorhanden": r"\b(?:Parkplatz|Einstellplatz|Garage)\b",
@@ -190,7 +190,8 @@ def parse_detail_text(text, item):
     floor_value = int(floor.group(1)) if floor else (0 if re.search(
         r"\b(?:Erdgeschoss|Parterre|im EG)\b", text, re.I) else None)
     features["Nicht Erdgeschoss"] = floor_value > 0 if floor_value is not None else None
-    parking_cost = money(r"(?:Parkplatz|Einstellplatz|Garagenplatz)\s*(?:/Monat|pro Monat|monatlich)?\s*(?:für|zu|ab)?")
+    parking_cost = money(r"(?:Parkplatz|Einstellplatz|Einstellhallenplatz|Garagenplatz)\s*"
+                         r"(?::\s*Optional)?\s*(?:/Monat|pro Monat|monatlich)?\s*(?:für|zu|ab)?")
     if parking_cost is not None and not 20 <= parking_cost <= 1000:
         parking_cost = None
     return {"status": "Detailseite geprüft", "net": net, "charges": charges,
@@ -408,7 +409,8 @@ for index, item in enumerate(list(st.session_state.results)):
     name = item.get("address") or item.get("title") or "Adresse noch offen"
     place = " ".join(x for x in (item.get("postcode"), item.get("town")) if x)
     rooms = f"{item['rooms']:g} Zimmer" if item.get("rooms") is not None else "Zimmer offen"
-    visible = (f"CHF {item['visible_price']:,.0f}" if item.get("visible_price") is not None
+    display_price = detail.get("gross") if detail and detail.get("gross") is not None else item.get("visible_price")
+    visible = (f"CHF {display_price:,.0f}" if display_price is not None
                else "Miete offen")
     with st.container(border=True):
         status = detail.get("status", "") if detail else ""
@@ -487,4 +489,4 @@ for i, item in enumerate(list(st.session_state.saved)):
         save_saved()
         st.rerun()
 
-st.caption("Wohnungs-Finder Schweiz V12.7 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
+st.caption("Wohnungs-Finder Schweiz V12.8 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
