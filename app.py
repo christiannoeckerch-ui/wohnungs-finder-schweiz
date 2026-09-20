@@ -1,4 +1,4 @@
-"""Wohnungs-Finder Schweiz V12.5. Run with: streamlit run app.py"""
+"""Wohnungs-Finder Schweiz V12.6. Run with: streamlit run app.py"""
 import json
 import html
 import re
@@ -72,9 +72,20 @@ def parse_result(raw):
     room_text = (rooms.group(1) or rooms.group(2)).replace("½", ".5").replace(" ", "")
     room_value = number(room_text)
     if room_value is None: return None
-    # Price must be in the same leading listing block. No price is preferable to a wrong price.
-    prices = re.findall(r"CHF\s*([\d'’.,]+)", lead, re.I)
-    price = number(prices[0]) if len(prices) == 1 else None
+    # Prefer a price in the title or directly beside this listing's address.
+    # Wider snippets can contain recommendations with unrelated prices.
+    title_prices = re.findall(r"CHF\s*([\d'’.,]+)", title, re.I)
+    price = number(title_prices[0]) if len(title_prices) == 1 else None
+    if price is None and addresses:
+        address_end = lead.find(addresses[0][0]) + len(addresses[0][0])
+        near_address = lead[address_end:address_end + 90]
+        adjacent = re.search(rf"^\s*,?\s*{re.escape(postal)}\s+{re.escape(town)}\b"
+                             r"[^\d]{0,25}\bCHF\s*([\d'’.,]+)", near_address, re.I)
+        if adjacent:
+            price = number(adjacent.group(1))
+    if price is None:
+        prices = re.findall(r"CHF\s*([\d'’.,]+)", lead, re.I)
+        price = number(prices[0]) if len(prices) == 1 else None
     if price is not None and price > 20000: return None
     if price is not None and price < 500: price = None
     address = None
@@ -83,6 +94,8 @@ def parse_result(raw):
         if a[1] == postcode.group(1): address = a[0].strip()
     if address:
         address = re.sub(r"^.*?\b(?:Zimmer\s+Wohnung|Wohnung\s+an\s+der)\s+", "", address, flags=re.I)
+        if re.search(r"\bStandort\s*[.:]", address, re.I):
+            address = re.split(r"\bStandort\s*[.:]\s*", address, flags=re.I)[-1].strip()
     if "flatfox.ch" in url:
         slug = urlparse(url).path.strip("/").split("/")[-2]
         slug = re.sub(r"-\d{4}-.*$", "", slug)
@@ -149,7 +162,7 @@ def parse_detail_text(text, item):
         without_exkl = re.sub(r"Mietpreis\s*exkl\.?\s*NK", "", text, flags=re.I)
         m = re.search(r"\bNK\b\s*:?\s*(?:CHF\s*)?" + amount, without_exkl, re.I)
         charges = number(m.group(1)) if m else None
-    gross = money(r"(?:Bruttomiete|Brutto-Miete|Gesamtmiete|Mietpreis(?!\s*exkl))")
+    gross = money(r"(?:Bruttomiete|Brutto-Miete|Gesamtmiete|Mietpreis(?!\s*exkl)|\bMiete\b)")
     if net is not None and charges is not None:
         computed = net + charges
         gross = computed if gross is None or abs(gross - computed) <= 1 else None
@@ -473,4 +486,4 @@ for i, item in enumerate(list(st.session_state.saved)):
         save_saved()
         st.rerun()
 
-st.caption("Wohnungs-Finder Schweiz V12.5 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
+st.caption("Wohnungs-Finder Schweiz V12.6 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
