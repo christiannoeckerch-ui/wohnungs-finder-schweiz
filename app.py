@@ -1,5 +1,6 @@
-"""Wohnungs-Finder Schweiz V12.3. Run with: streamlit run app.py"""
+"""Wohnungs-Finder Schweiz V12.4. Run with: streamlit run app.py"""
 import json
+import html
 import re
 import time
 import unicodedata
@@ -172,8 +173,34 @@ def parse_detail_text(text, item):
 
 
 st.set_page_config(page_title="Wohnungs-Finder Schweiz", page_icon="🏠", layout="wide")
-st.title("🏠 Wohnungs-Finder Schweiz · V12.3")
-st.caption("Wohnungen finden, dann einzelne Inserate gezielt prüfen.")
+st.markdown("""<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Outfit:wght@500;600;700&display=swap');
+:root { --ink:#18384a; --teal:#087f79; --mint:#e9f7f2; --line:#d9e8e5; }
+.stApp { background:linear-gradient(180deg,#eaf5f2 0,#f6faf9 350px,#f8faf9 100%); color:var(--ink); font-family:'DM Sans',sans-serif; }
+.block-container { max-width:1120px; padding-top:2rem; padding-bottom:4rem; }
+h1,h2,h3 { font-family:'Outfit',sans-serif !important; color:var(--ink) !important; letter-spacing:-.025em; }
+.hero { background:linear-gradient(115deg,#075c62,#087f79 64%,#189c81); color:white; border-radius:25px; padding:34px 42px; box-shadow:0 16px 42px rgba(4,91,89,.15); margin-bottom:26px; }
+.hero .eyebrow { font-size:.76rem; letter-spacing:.16em; font-weight:700; text-transform:uppercase; color:#c8f6e7; margin-bottom:12px; }
+.hero h1 { color:white !important; font-size:clamp(2rem,4vw,3.15rem); line-height:1.12; margin:0 0 12px; }
+.hero p { margin:0; color:#e1f5ee; font-size:1.04rem; }
+div[data-testid='stVerticalBlockBorderWrapper'] { border-color:var(--line) !important; border-radius:20px !important; background:white; box-shadow:0 8px 28px rgba(20,67,66,.055); }
+div[data-testid='stButton'] button[kind='primary'] { background:#087f79; border-color:#087f79; border-radius:11px; font-weight:700; min-height:45px; }
+div[data-testid='stButton'] button[kind='secondary'], div[data-testid='stLinkButton'] a { border-radius:10px; border-color:#cbded9; color:#145450; font-weight:600; }
+.section-title { font:700 1.65rem 'Outfit',sans-serif; color:#18384a; margin:29px 0 5px; }
+.section-note { color:#637b80; margin-bottom:16px; }
+.listing-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin:3px 0 15px; }
+.listing-name { font:700 1.48rem 'Outfit',sans-serif; color:#18384a; }
+.listing-place { color:#607b7d; font-size:.94rem; margin-top:3px; }
+.listing-price { background:#e9f7f2; color:#086b65; border-radius:12px; padding:10px 16px; font-weight:700; white-space:nowrap; }
+.listing-meta { display:flex; flex-wrap:wrap; gap:9px; margin-bottom:17px; }
+.listing-meta span { background:#f3f7f6; color:#45666a; border-radius:100px; padding:6px 12px; font-size:.84rem; font-weight:600; }
+.listing-meta .checked { background:#dff4e8; color:#146746; }
+.listing-meta .expired { background:#fff0e9; color:#a54c2c; }
+@media(max-width:650px) { .hero{padding:26px 23px} .block-container{padding-left:1rem;padding-right:1rem} .listing-name{font-size:1.25rem} }
+</style>""", unsafe_allow_html=True)
+st.markdown("""<div class="hero"><div class="eyebrow">Dein Wohnungsagent · Region Basel</div>
+<h1>Finde ein Zuhause,<br>das zu dir passt.</h1>
+<p>Wohnungen entdecken, Details prüfen und Favoriten sammeln.</p></div>""", unsafe_allow_html=True)
 
 TAX = {"Aesch": 56.0, "Allschwil": 58.0, "Arlesheim": 47.0, "Binningen": 49.0,
        "Frenkendorf": 57.0, "Liestal": 65.0, "Münchenstein": 60.0, "Muttenz": 56.0,
@@ -284,7 +311,7 @@ if "saved" not in st.session_state: st.session_state.saved = load_saved()
 if "results" not in st.session_state: st.session_state.results = []
 if "details" not in st.session_state: st.session_state.details = {}
 
-st.header("1. Suchprofil")
+st.markdown('<div class="section-title">🔎 Deine Suche</div><div class="section-note">Wähle Ort, Budget und Zimmerzahl.</div>', unsafe_allow_html=True)
 towns = st.multiselect("Gemeinden", list(POSTCODES),
                        default=[canonical_town(x) for x in DEFAULT])
 extra = st.text_input("Weitere Orte (kommagetrennt)",
@@ -341,7 +368,7 @@ if diag:
             f"{e['ort']}/{e['zimmer']}/{e['budget']} · "
             f"fehlgeschlagene Suchabfragen: {diag['errors']}")
 
-st.header("2. Gefundene Wohnungen")
+st.markdown('<div class="section-title">🏡 Gefundene Wohnungen</div><div class="section-note">Öffne die Details für verlässliche Kosten und Wohnungsmerkmale.</div>', unsafe_allow_html=True)
 if not st.session_state.results:
     st.caption("Noch keine Wohnungen gefunden. Die Suche zeigt nur URLs konkreter Inserate.")
 
@@ -354,10 +381,14 @@ for index, item in enumerate(list(st.session_state.results)):
     visible = (f"CHF {item['visible_price']:,.0f}" if item.get("visible_price") is not None
                else "Miete offen")
     with st.container(border=True):
-        st.subheader(f"🏠 {name}")
-        st.write(f"**{rooms} · {visible} · {place}**")
-        st.caption(("✅ Details geprüft" if detail and "geprüft" in detail.get("status", "")
-                    else "🔎 Gefunden · Detailprüfung offen") + " · " + item["source"])
+        status = detail.get("status", "") if detail else ""
+        badge_class = "expired" if detail and detail.get("unavailable") else "checked" if "geprüft" in status else ""
+        badge = "Nicht mehr verfügbar" if badge_class == "expired" else "Details geprüft" if badge_class == "checked" else "Details noch offen"
+        safe = lambda value: html.escape(str(value))
+        st.markdown(f'''<div class="listing-head"><div><div class="listing-name">🏠 {safe(name)}</div>
+<div class="listing-place">📍 {safe(place)}</div></div><div class="listing-price">{safe(visible)}</div></div>
+<div class="listing-meta"><span>🛏️ {safe(rooms)}</span><span class="{badge_class}">{safe(badge)}</span>
+<span>🌐 {safe(item['source'])}</span></div>''', unsafe_allow_html=True)
         actions = st.columns(3)
         if actions[0].button("🔍 Details prüfen", key="detail_" + url):
             with st.spinner("Originalinserat wird geprüft ..."):
@@ -414,7 +445,7 @@ for index, item in enumerate(list(st.session_state.results)):
                 if want_tax and item.get("town") in TAX:
                     st.caption(f"Steuerfuss {item['town']}: {TAX[item['town']]:g} %")
 
-st.header("3. Merkliste")
+st.markdown('<div class="section-title">♡ Deine Merkliste</div><div class="section-note">Gespeicherte Inserate bleiben in diesem Browser erhalten.</div>', unsafe_allow_html=True)
 for i, item in enumerate(list(st.session_state.saved)):
     address = item.get("address") or item.get("strasse") or item.get("title") or "Wohnung"
     town = item.get("town") or item.get("ort") or ""
@@ -427,4 +458,4 @@ for i, item in enumerate(list(st.session_state.saved)):
         save_saved()
         st.rerun()
 
-st.caption("Wohnungs-Finder Schweiz V12.3 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
+st.caption("Wohnungs-Finder Schweiz V12.4 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
