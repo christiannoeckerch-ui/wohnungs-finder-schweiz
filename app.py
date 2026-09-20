@@ -1,4 +1,4 @@
-"""Wohnungs-Finder Schweiz V12.9. Run with: streamlit run app.py"""
+"""Wohnungs-Finder Schweiz V12.10. Run with: streamlit run app.py"""
 import json
 import html
 import re
@@ -366,6 +366,7 @@ def save_saved():
 if "saved" not in st.session_state: st.session_state.saved = load_saved()
 if "results" not in st.session_state: st.session_state.results = []
 if "details" not in st.session_state: st.session_state.details = {}
+if "expanded" not in st.session_state: st.session_state.expanded = set()
 
 st.markdown('<div class="section-title">🔎 Deine Suche</div><div class="section-note">Wähle Ort, Budget und Zimmerzahl.</div>', unsafe_allow_html=True)
 towns = st.multiselect("Gemeinden", list(POSTCODES),
@@ -415,6 +416,7 @@ if st.button("🔎 Wohnungen suchen", type="primary", use_container_width=True):
                 st.session_state.results = results
                 st.session_state.details = {item["url"]: checked[item["url"]]
                                             for item in results if item["url"] in checked}
+                st.session_state.expanded = set()
                 st.session_state.diagnostic = {
                     "seconds": round(time.monotonic() - start, 1),
                     "sources": raw_count, "unique": unique_count,
@@ -460,17 +462,21 @@ for index, item in enumerate(list(st.session_state.results)):
 <div class="listing-price">{safe(visible)}</div><div class="listing-status {badge_class}">{safe(badge)}<br>🌐 {safe(item['source'])}</div></div>''', unsafe_allow_html=True)
         actions = st.columns(3)
         if actions[0].button("🔍 Details prüfen", key="detail_" + url):
-            with st.spinner("Originalinserat wird geprüft ..."):
-                checked = detail_for(item)
-            if "features" in checked:
-                reason, _, _ = budget(checked, None, maximum)
-                if reason:
-                    st.session_state.results = [x for x in st.session_state.results
-                                                if x["url"] != url]
-                    st.session_state.details.pop(url, None)
-                    st.warning("Sicher bekannte Kosten über dem Budget: Treffer entfernt.")
-                    st.rerun()
-            st.session_state.details[url] = checked
+            if detail and url not in st.session_state.expanded:
+                st.session_state.expanded.add(url)
+            else:
+                with st.spinner("Originalinserat wird geprüft ..."):
+                    checked = detail_for(item)
+                if "features" in checked:
+                    reason, _, _ = budget(checked, None, maximum)
+                    if reason:
+                        st.session_state.results = [x for x in st.session_state.results
+                                                    if x["url"] != url]
+                        st.session_state.details.pop(url, None)
+                        st.warning("Sicher bekannte Kosten über dem Budget: Treffer entfernt.")
+                        st.rerun()
+                st.session_state.details[url] = checked
+                st.session_state.expanded.add(url)
             st.rerun()
         if actions[1].button("☆ Merken", key="save_" + url):
             if not any(x.get("url") == url for x in st.session_state.saved):
@@ -479,7 +485,7 @@ for index, item in enumerate(list(st.session_state.results)):
             st.toast("In der Merkliste gespeichert")
         actions[2].link_button("🏠 Originalinserat öffnen", url)
 
-        if detail:
+        if detail and url in st.session_state.expanded:
             if detail.get("unavailable"):
                 st.warning("Dieses Inserat ist laut Originalseite nicht mehr verfügbar.")
             else:
@@ -527,4 +533,4 @@ for i, item in enumerate(list(st.session_state.saved)):
         save_saved()
         st.rerun()
 
-st.caption("Wohnungs-Finder Schweiz V12.9 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
+st.caption("Wohnungs-Finder Schweiz V12.10 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
