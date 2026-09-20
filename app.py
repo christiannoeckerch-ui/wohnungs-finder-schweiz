@@ -1,4 +1,4 @@
-"""Wohnungs-Finder Schweiz V12. Run with: streamlit run app.py"""
+"""Wohnungs-Finder Schweiz V12.1. Run with: streamlit run app.py"""
 import json
 import re
 import time
@@ -47,19 +47,34 @@ def parse_result(raw):
     if not listing_url(url): return None
     title = str(raw.get("title") or "")
     content = str(raw.get("content") or "")[:1600]
+    if re.search(r"\b(?:gewerbe|büro|buero|laden|praxis|lager|verkauf|kaufen|kaufobjekt|"
+                 r"eigentumswohnung|einzelzimmer|wg[ -]?zimmer|tiefgaragenplatz)\b",
+                 title, re.I): return None
     # Search snippets often contain recommendations. The title and first address block
     # are safer than searching the entire snippet for arbitrary values.
     lead = (title + " " + content[:450]).replace("\u00a0", " ")
     addresses = re.findall(r"([\wÀ-ÿ][\wÀ-ÿ .'-]{2,55}?\s+\d+[a-zA-Z]?),\s*(\d{4})\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ -]+?)(?=\s+(?:CHF|\d(?:[.,]\d)?\s*Zimmer|Top|Premium)|[.;|]|$)", lead, re.I)
     if len({(a[0].casefold(), a[1]) for a in addresses}) > 1: return None
     postcode = re.search(r"\b(\d{4})\s+([A-ZÀ-ÿ][A-Za-zÀ-ÿ-]+)(?:\s+BL)?\b", lead)
-    town = postcode.group(2).capitalize() if postcode else None
-    if postcode and town in POSTCODES and POSTCODES[town] != postcode.group(1): return None
-    rooms = re.search(r"\b(\d(?:[.,]5)?)\s*(?:-|\s*)Zimmer\b", lead, re.I)
-    room_value = number(rooms.group(1)) if rooms else None
+    flatfox = "flatfox.ch" in urlparse(url).netloc.lower()
+    slug_postcode = re.search(r"-(\d{4})-(?:[a-z-]+?)/\d+/?$", urlparse(url).path, re.I) if flatfox else None
+    postal = slug_postcode.group(1) if slug_postcode else postcode.group(1) if postcode else None
+    if not postal: return None
+    known_town = next((name for name, code in POSTCODES.items() if code == postal), None)
+    town = known_town or (postcode.group(2).capitalize() if postcode else None)
+    if not town: return None
+    if postcode and known_town and postcode.group(1) != postal: return None
+    rooms = re.search(r"\b(\d(?:[.,]5)?|\d\s*½)\s*(?:-|\s*)Zimmer\b|"
+                      r"\bZimmer\s*[.:\-]?\s*(\d(?:[.,]5)?|\d\s*½)\b", lead, re.I)
+    if not rooms: return None
+    room_text = (rooms.group(1) or rooms.group(2)).replace("½", ".5").replace(" ", "")
+    room_value = number(room_text)
+    if room_value is None: return None
     # Price must be in the same leading listing block. No price is preferable to a wrong price.
     prices = re.findall(r"CHF\s*([\d'’.,]+)", lead, re.I)
     price = number(prices[0]) if len(prices) == 1 else None
+    if price is not None and price > 20000: return None
+    if price is not None and price < 500: price = None
     address = None
     if addresses and postcode:
         a = addresses[0]
@@ -71,7 +86,7 @@ def parse_result(raw):
         slug = re.sub(r"-\d{4}-.*$", "", slug)
         if re.search(r"\d", slug): address = slug.replace("-", " ").title()
     return {"url": url, "title": title, "address": address, "town": town,
-            "postcode": postcode.group(1) if postcode else None,
+            "postcode": postal,
             "rooms": room_value, "visible_price": price, "price_kind": "sichtbare Miete" if price else None,
             "source": urlparse(url).netloc, "detail": None}
 
@@ -154,7 +169,7 @@ def parse_detail_text(text, item):
 
 
 st.set_page_config(page_title="Wohnungs-Finder Schweiz", page_icon="🏠", layout="wide")
-st.title("🏠 Wohnungs-Finder Schweiz · V12")
+st.title("🏠 Wohnungs-Finder Schweiz · V12.1")
 st.caption("Wohnungen finden, dann einzelne Inserate gezielt prüfen.")
 
 TAX = {"Aesch": 56.0, "Allschwil": 58.0, "Arlesheim": 47.0, "Binningen": 49.0,
@@ -402,4 +417,4 @@ for i, item in enumerate(list(st.session_state.saved)):
         save_saved()
         st.rerun()
 
-st.caption("Wohnungs-Finder Schweiz V12 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
+st.caption("Wohnungs-Finder Schweiz V12.1 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
