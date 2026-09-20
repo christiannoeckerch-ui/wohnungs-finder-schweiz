@@ -1,4 +1,4 @@
-"""Wohnungs-Finder Schweiz V12.8. Run with: streamlit run app.py"""
+"""Wohnungs-Finder Schweiz V12.9. Run with: streamlit run app.py"""
 import json
 import html
 import re
@@ -278,11 +278,39 @@ class VisibleText(HTMLParser):
     def handle_data(self, data):
         if not self.hidden: self.parts.append(data)
 
-def page_text(url):
-    response = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+def page_text(url, timeout=15):
+    response = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
     response.raise_for_status()
     parser = VisibleText(); parser.feed(response.text)
     return re.sub(r"\s+", " ", " ".join(parser.parts))[:16000]
+
+def quick_price(item):
+    """Check one exact listing for rent without slowing search with Extract calls."""
+    try:
+        text = page_text(item["url"], timeout=5)
+        if re.search(r"Dieses Objekt ist leider gerade nicht verfügbar|"
+                     r"Inserat ist nicht mehr verfügbar|Objekt wurde deaktiviert", text, re.I):
+            return item["url"], None
+        detail = parse_detail_text(text, item)
+        if detail and (detail.get("gross") is not None or
+                       detail.get("net") is not None and detail.get("charges") is not None):
+            detail["status"] = "Detailseite geprüft (Originalseite)"
+            return item["url"], detail
+    except (requests.RequestException, ValueError):
+        pass
+    return item["url"], None
+
+def quick_prices(items):
+    missing = [item for item in items if item.get("visible_price") is None]
+    checked = {}
+    if not missing:
+        return checked
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        for future in as_completed([pool.submit(quick_price, item) for item in missing]):
+            url, detail = future.result()
+            if detail:
+                checked[url] = detail
+    return checked
 
 @st.cache_data(ttl=1200, show_spinner=False)
 def tavily_extract(url, api_key):
@@ -370,19 +398,29 @@ if st.button("🔎 Wohnungen suchen", type="primary", use_container_width=True):
         st.error("TAVILY_API_KEY fehlt in den Streamlit Secrets.")
     else:
         start = time.monotonic()
-        with st.spinner("Konkrete Inserate werden gesucht ..."):
+        with st.spinner("Inserate und fehlende Mietpreise werden geprüft ..."):
             try:
                 raw_count, unique_count, parsed_count, errors, parsed = search(
                     towns, st.secrets["TAVILY_API_KEY"])
                 results, excluded = filter_listings(parsed, towns, min_rooms,
                                                     max_rooms, maximum)
+                checked = quick_prices(results)
+                for item in results:
+                    if item["url"] in checked:
+                        item["detail"] = checked[item["url"]]
+                results, rechecked = filter_listings(results, towns, min_rooms,
+                                                     max_rooms, maximum)
+                for reason in excluded:
+                    excluded[reason] += rechecked[reason]
                 st.session_state.results = results
-                st.session_state.details = {}
+                st.session_state.details = {item["url"]: checked[item["url"]]
+                                            for item in results if item["url"] in checked}
                 st.session_state.diagnostic = {
                     "seconds": round(time.monotonic() - start, 1),
                     "sources": raw_count, "unique": unique_count,
                     "direct": parsed_count, "excluded": excluded,
                     "shown": len(results), "errors": errors,
+                    "prices_checked": len(checked),
                 }
             except Exception as exc:
                 st.error(f"Suche fehlgeschlagen: {exc}")
@@ -489,4 +527,4 @@ for i, item in enumerate(list(st.session_state.saved)):
         save_saved()
         st.rerun()
 
-st.caption("Wohnungs-Finder Schweiz V12.8 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
+st.caption("Wohnungs-Finder Schweiz V12.9 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
