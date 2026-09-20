@@ -1,4 +1,4 @@
-"""Wohnungs-Finder Schweiz V12.2. Run with: streamlit run app.py"""
+"""Wohnungs-Finder Schweiz V12.3. Run with: streamlit run app.py"""
 import json
 import re
 import time
@@ -172,7 +172,7 @@ def parse_detail_text(text, item):
 
 
 st.set_page_config(page_title="Wohnungs-Finder Schweiz", page_icon="🏠", layout="wide")
-st.title("🏠 Wohnungs-Finder Schweiz · V12.2")
+st.title("🏠 Wohnungs-Finder Schweiz · V12.3")
 st.caption("Wohnungen finden, dann einzelne Inserate gezielt prüfen.")
 
 TAX = {"Aesch": 56.0, "Allschwil": 58.0, "Arlesheim": 47.0, "Binningen": 49.0,
@@ -242,6 +242,10 @@ def detail_for(item):
     texts = []
     try:
         direct_text = page_text(item["url"])
+        if re.search(r"Dieses Objekt ist leider gerade nicht verfügbar|"
+                     r"Inserat ist nicht mehr verfügbar|Objekt wurde deaktiviert",
+                     direct_text, re.I):
+            return {"status": "Inserat nicht mehr verfügbar", "unavailable": True}
         texts.append(("Originalseite", direct_text))
         direct_detail = parse_detail_text(direct_text, item)
         if direct_detail and direct_detail.get("net") is not None and direct_detail.get("charges") is not None:
@@ -260,10 +264,10 @@ def detail_for(item):
             return detail
     for source, text in texts:
         detail = parse_detail_text(text, item)
-        if detail:
-            detail["status"] = f"Detailseite geprüft ({source}); Kostenangaben offen"
+        if detail and any(value is not None for value in detail["features"].values()):
+            detail["status"] = f"Merkmale geprüft ({source}); Kostenangaben offen"
             return detail
-    return {"status": "Inserattext nicht eindeutig lesbar; Details offen"}
+    return {"status": "Inserattext enthält keine prüfbaren Details; Angaben offen"}
 
 def load_saved():
     try:
@@ -376,7 +380,10 @@ for index, item in enumerate(list(st.session_state.results)):
         actions[2].link_button("🏠 Originalinserat öffnen", url)
 
         if detail:
-            st.write("**" + detail["status"] + "**")
+            if detail.get("unavailable"):
+                st.warning("Dieses Inserat ist laut Originalseite nicht mehr verfügbar.")
+            else:
+                st.write("**" + detail["status"] + "**")
             if "features" in detail:
                 net, charges, gross, parking = (detail.get(k) for k in
                                                  ("net", "charges", "gross", "parking_cost"))
@@ -420,4 +427,4 @@ for i, item in enumerate(list(st.session_state.saved)):
         save_saved()
         st.rerun()
 
-st.caption("Wohnungs-Finder Schweiz V12.2 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
+st.caption("Wohnungs-Finder Schweiz V12.3 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
