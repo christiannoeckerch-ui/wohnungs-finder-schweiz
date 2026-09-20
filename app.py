@@ -1,4 +1,4 @@
-"""Wohnungs-Finder Schweiz V12.6. Run with: streamlit run app.py"""
+"""Wohnungs-Finder Schweiz V12.7. Run with: streamlit run app.py"""
 import json
 import html
 import re
@@ -241,6 +241,7 @@ def queries(town):
     place = f"{postal} {name}" if postal else name
     return [f'"{place}" Wohnung mieten site:flatfox.ch/de/wohnung/',
             f'"{place}" Wohnung mieten site:homegate.ch/mieten/',
+            f'"{place}" "2.5 Zimmer" Wohnung site:homegate.ch/mieten/',
             f'"{place}" Wohnung mieten site:immoscout24.ch/de/d/',
             f'"{place}" Wohnung mieten site:newhome.ch/']
 
@@ -486,4 +487,4 @@ for i, item in enumerate(list(st.session_state.saved)):
         save_saved()
         st.rerun()
 
-st.caption("Wohnungs-Finder Schweiz V12.6 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
+st.caption("Wohnungs-Finder Schweiz V12.7 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
