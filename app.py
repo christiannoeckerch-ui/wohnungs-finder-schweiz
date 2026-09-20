@@ -1,7 +1,8 @@
-"""Wohnungs-Finder Schweiz V12.1. Run with: streamlit run app.py"""
+"""Wohnungs-Finder Schweiz V12.2. Run with: streamlit run app.py"""
 import json
 import re
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
 from urllib.parse import urlparse
@@ -63,7 +64,7 @@ def parse_result(raw):
     known_town = next((name for name, code in POSTCODES.items() if code == postal), None)
     town = known_town or (postcode.group(2).capitalize() if postcode else None)
     if not town: return None
-    if postcode and known_town and postcode.group(1) != postal: return None
+    if postcode and postcode.group(1) != postal: return None
     rooms = re.search(r"\b(\d(?:[.,]5)?|\d\s*½)\s*(?:-|\s*)Zimmer\b|"
                       r"\bZimmer\s*[.:\-]?\s*(\d(?:[.,]5)?|\d\s*½)\b", lead, re.I)
     if not rooms: return None
@@ -81,7 +82,7 @@ def parse_result(raw):
         if a[1] == postcode.group(1): address = a[0].strip()
     if address:
         address = re.sub(r"^.*?\b(?:Zimmer\s+Wohnung|Wohnung\s+an\s+der)\s+", "", address, flags=re.I)
-    if not address and "flatfox.ch" in url:
+    if "flatfox.ch" in url:
         slug = urlparse(url).path.strip("/").split("/")[-2]
         slug = re.sub(r"-\d{4}-.*$", "", slug)
         if re.search(r"\d", slug): address = slug.replace("-", " ").title()
@@ -118,7 +119,9 @@ def filter_listings(items, towns, min_rooms, max_rooms, maximum):
 
 def parse_detail_text(text, item):
     """Extract only explicit statements from a confirmed individual apartment page."""
-    normalize = lambda value: re.sub(r"[^a-z0-9]", "", str(value).casefold())
+    normalize = lambda value: re.sub(
+        r"[^a-z0-9]", "", unicodedata.normalize("NFKD", str(value))
+        .encode("ascii", "ignore").decode("ascii").casefold())
     if item.get("address") and normalize(item["address"]) not in normalize(text): return None
     if item.get("postcode") and item["postcode"] not in text: return None
     if item.get("town") and canonical_town(item["town"]).casefold() not in text.casefold(): return None
@@ -169,7 +172,7 @@ def parse_detail_text(text, item):
 
 
 st.set_page_config(page_title="Wohnungs-Finder Schweiz", page_icon="🏠", layout="wide")
-st.title("🏠 Wohnungs-Finder Schweiz · V12.1")
+st.title("🏠 Wohnungs-Finder Schweiz · V12.2")
 st.caption("Wohnungen finden, dann einzelne Inserate gezielt prüfen.")
 
 TAX = {"Aesch": 56.0, "Allschwil": 58.0, "Arlesheim": 47.0, "Binningen": 49.0,
@@ -417,4 +420,4 @@ for i, item in enumerate(list(st.session_state.saved)):
         save_saved()
         st.rerun()
 
-st.caption("Wohnungs-Finder Schweiz V12.1 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
+st.caption("Wohnungs-Finder Schweiz V12.2 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
