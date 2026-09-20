@@ -1,4 +1,4 @@
-"""Wohnungs-Finder Schweiz V12.10. Run with: streamlit run app.py"""
+"""Wohnungs-Finder Schweiz V12.11. Run with: streamlit run app.py"""
 import json
 import html
 import re
@@ -285,11 +285,13 @@ def page_text(url, timeout=15):
     return re.sub(r"\s+", " ", " ".join(parser.parts))[:16000]
 
 def quick_price(item):
-    """Check one exact listing for rent without slowing search with Extract calls."""
+    """Check one exact listing for availability and missing rent."""
     try:
         text = page_text(item["url"], timeout=5)
         if re.search(r"Dieses Objekt ist leider gerade nicht verfügbar|"
                      r"Inserat ist nicht mehr verfügbar|Objekt wurde deaktiviert", text, re.I):
+            return item["url"], {"unavailable": True}
+        if item.get("visible_price") is not None:
             return item["url"], None
         detail = parse_detail_text(text, item)
         if detail and (detail.get("gross") is not None or
@@ -301,16 +303,16 @@ def quick_price(item):
     return item["url"], None
 
 def quick_prices(items):
-    missing = [item for item in items if item.get("visible_price") is None]
     checked = {}
-    if not missing:
-        return checked
+    unavailable = set()
     with ThreadPoolExecutor(max_workers=10) as pool:
-        for future in as_completed([pool.submit(quick_price, item) for item in missing]):
+        for future in as_completed([pool.submit(quick_price, item) for item in items]):
             url, detail = future.result()
-            if detail:
+            if detail and detail.get("unavailable"):
+                unavailable.add(url)
+            elif detail:
                 checked[url] = detail
-    return checked
+    return checked, unavailable
 
 @st.cache_data(ttl=1200, show_spinner=False)
 def tavily_extract(url, api_key):
@@ -405,7 +407,8 @@ if st.button("🔎 Wohnungen suchen", type="primary", use_container_width=True):
                     towns, st.secrets["TAVILY_API_KEY"])
                 results, excluded = filter_listings(parsed, towns, min_rooms,
                                                     max_rooms, maximum)
-                checked = quick_prices(results)
+                checked, unavailable = quick_prices(results)
+                results = [item for item in results if item["url"] not in unavailable]
                 for item in results:
                     if item["url"] in checked:
                         item["detail"] = checked[item["url"]]
@@ -423,6 +426,7 @@ if st.button("🔎 Wohnungen suchen", type="primary", use_container_width=True):
                     "direct": parsed_count, "excluded": excluded,
                     "shown": len(results), "errors": errors,
                     "prices_checked": len(checked),
+                    "unavailable": len(unavailable),
                 }
             except Exception as exc:
                 st.error(f"Suche fehlgeschlagen: {exc}")
@@ -437,6 +441,7 @@ if diag:
             f"{diag['unique']} URLs · {diag['direct']} direkte Inserat-URLs · "
             f"{len(st.session_state.results)} angezeigt · Ausschlüsse Ort/Zimmer/Budget: "
             f"{e['ort']}/{e['zimmer']}/{e['budget']} · "
+            f"nicht mehr verfügbar: {diag.get('unavailable', 0)} · "
             f"fehlgeschlagene Suchabfragen: {diag['errors']}")
 
 st.markdown('<div class="section-title">🏡 Gefundene Wohnungen</div><div class="section-note">Öffne die Details für verlässliche Kosten und Wohnungsmerkmale.</div>', unsafe_allow_html=True)
@@ -533,4 +538,4 @@ for i, item in enumerate(list(st.session_state.saved)):
         save_saved()
         st.rerun()
 
-st.caption("Wohnungs-Finder Schweiz V12.10 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
+st.caption("Wohnungs-Finder Schweiz V12.11 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
