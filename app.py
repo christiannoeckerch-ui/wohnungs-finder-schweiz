@@ -1,4 +1,4 @@
-"""Wohnungs-Finder Schweiz V12.11. Run with: streamlit run app.py"""
+"""Wohnungs-Finder Schweiz V12.12. Run with: streamlit run app.py"""
 import json
 import html
 import re
@@ -435,20 +435,26 @@ diag = st.session_state.get("diagnostic")
 if st.session_state.results:
     st.session_state.results, _ = filter_listings(
         st.session_state.results, towns, min_rooms, max_rooms, maximum)
+priced_results = [item for item in st.session_state.results
+                  if (st.session_state.details.get(item["url"]) or {}).get("gross") is not None
+                  or item.get("visible_price") is not None]
+unknown_results = [item for item in st.session_state.results
+                   if item not in priced_results]
 if diag:
     e = diag["excluded"]
     st.info(f"Suche {diag['seconds']:.1f} s · {diag['sources']} Webtreffer · "
             f"{diag['unique']} URLs · {diag['direct']} direkte Inserat-URLs · "
-            f"{len(st.session_state.results)} angezeigt · Ausschlüsse Ort/Zimmer/Budget: "
+            f"{len(priced_results)} mit Mietpreis · {len(unknown_results)} mit offener Miete · "
+            f"Ausschlüsse Ort/Zimmer/Budget: "
             f"{e['ort']}/{e['zimmer']}/{e['budget']} · "
             f"nicht mehr verfügbar: {diag.get('unavailable', 0)} · "
             f"fehlgeschlagene Suchabfragen: {diag['errors']}")
 
-st.markdown('<div class="section-title">🏡 Gefundene Wohnungen</div><div class="section-note">Öffne die Details für verlässliche Kosten und Wohnungsmerkmale.</div>', unsafe_allow_html=True)
-if not st.session_state.results:
+st.markdown('<div class="section-title">🏡 Wohnungen mit Mietpreis</div><div class="section-note">Nur Treffer mit bekanntem Mietpreis; Nebenkosten und Parkplatz bei Bedarf prüfen.</div>', unsafe_allow_html=True)
+if not priced_results:
     st.caption("Noch keine Wohnungen gefunden. Die Suche zeigt nur URLs konkreter Inserate.")
 
-for index, item in enumerate(list(st.session_state.results)):
+for index, item in enumerate(list(priced_results)):
     url = item["url"]
     detail = st.session_state.details.get(url)
     name = item.get("address") or item.get("title") or "Adresse noch offen"
@@ -480,6 +486,11 @@ for index, item in enumerate(list(st.session_state.results)):
                         st.session_state.details.pop(url, None)
                         st.warning("Sicher bekannte Kosten über dem Budget: Treffer entfernt.")
                         st.rerun()
+                if checked.get("unavailable"):
+                    st.session_state.results = [x for x in st.session_state.results
+                                                if x["url"] != url]
+                    st.session_state.details.pop(url, None)
+                    st.rerun()
                 st.session_state.details[url] = checked
                 st.session_state.expanded.add(url)
             st.rerun()
@@ -525,6 +536,28 @@ for index, item in enumerate(list(st.session_state.results)):
                 if want_tax and item.get("town") in TAX:
                     st.caption(f"Steuerfuss {item['town']}: {TAX[item['town']]:g} %")
 
+if unknown_results:
+    with st.expander(f"Weitere {len(unknown_results)} Inserate ohne prüfbaren Mietpreis"):
+        st.caption(f"Diese Inserate sind nicht als budgetgerecht bestätigt. Der Originalpreis kann auch über CHF {maximum:,.0f} liegen oder das Inserat kann abgelaufen sein.")
+        for item in unknown_results:
+            url = item["url"]
+            name = item.get("address") or item.get("title") or "Wohnung"
+            place = " ".join(x for x in (item.get("postcode"), item.get("town")) if x)
+            left, middle, right = st.columns([4, 2, 2])
+            left.write(f"**{name}** · {place} · {item['rooms']:g} Zimmer")
+            middle.link_button("Original öffnen", url, key="unknown_link_" + url)
+            if right.button("Preis prüfen", key="unknown_detail_" + url):
+                with st.spinner("Originalinserat wird geprüft ..."):
+                    checked = detail_for(item)
+                if checked.get("unavailable") or budget(checked, None, maximum)[0] == "budget":
+                    st.session_state.results = [x for x in st.session_state.results
+                                                if x["url"] != url]
+                    st.session_state.details.pop(url, None)
+                else:
+                    st.session_state.details[url] = checked
+                    item["detail"] = checked
+                st.rerun()
+
 st.markdown('<div class="section-title">♡ Deine Merkliste</div><div class="section-note">Gespeicherte Inserate bleiben in diesem Browser erhalten.</div>', unsafe_allow_html=True)
 for i, item in enumerate(list(st.session_state.saved)):
     address = item.get("address") or item.get("strasse") or item.get("title") or "Wohnung"
@@ -538,4 +571,4 @@ for i, item in enumerate(list(st.session_state.saved)):
         save_saved()
         st.rerun()
 
-st.caption("Wohnungs-Finder Schweiz V12.11 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
+st.caption("Wohnungs-Finder Schweiz V12.12 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
