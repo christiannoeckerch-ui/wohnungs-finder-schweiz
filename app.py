@@ -1,4 +1,4 @@
-"""Wohnungs-Finder Schweiz V12.4. Run with: streamlit run app.py"""
+"""Wohnungs-Finder Schweiz V12.5. Run with: streamlit run app.py"""
 import json
 import html
 import re
@@ -99,7 +99,11 @@ def budget(detail, visible_price, maximum):
     charges = detail.get("charges")
     parking = detail.get("parking_cost")
     if gross is None and net is not None and charges is not None: gross = net + charges
-    # Visible rent may be net. Only confirmed gross can exclude.
+    # A visible rent can be net or gross, but the monthly total cannot be lower.
+    if visible_price is not None and visible_price > maximum:
+        return "budget", visible_price, False
+    if net is not None and net > maximum:
+        return "budget", net, False
     if gross is not None and gross > maximum: return "budget", gross, False
     if gross is not None and parking is not None and gross + parking > maximum:
         return "budget", gross + parking, False
@@ -110,11 +114,20 @@ def filter_listings(items, towns, min_rooms, max_rooms, maximum):
     allowed = {canonical_town(x).casefold() for x in towns}
     counts = {"ort": 0, "zimmer": 0, "budget": 0}
     out = []
+    seen = set()
     for item in items:
         if item.get("town") and canonical_town(item["town"]).casefold() not in allowed: counts["ort"] += 1; continue
         if item.get("rooms") is not None and not min_rooms <= item["rooms"] <= max_rooms: counts["zimmer"] += 1; continue
         reason, _, _ = budget(item.get("detail"), item.get("visible_price"), maximum)
         if reason: counts["budget"] += 1; continue
+        # Search engines may return the same flat via several listing IDs.
+        address = item.get("address")
+        if address:
+            address_key = re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", address)
+                                 .encode("ascii", "ignore").decode("ascii").casefold())
+            key = (item.get("postcode"), address_key, item.get("rooms"), item.get("visible_price"))
+            if key in seen: continue
+            seen.add(key)
         out.append(item)
     return out, counts
 
@@ -188,15 +201,15 @@ div[data-testid='stButton'] button[kind='primary'] { background:#087f79; border-
 div[data-testid='stButton'] button[kind='secondary'], div[data-testid='stLinkButton'] a { border-radius:10px; border-color:#cbded9; color:#145450; font-weight:600; }
 .section-title { font:700 1.65rem 'Outfit',sans-serif; color:#18384a; margin:29px 0 5px; }
 .section-note { color:#637b80; margin-bottom:16px; }
-.listing-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin:3px 0 15px; }
-.listing-name { font:700 1.48rem 'Outfit',sans-serif; color:#18384a; }
-.listing-place { color:#607b7d; font-size:.94rem; margin-top:3px; }
-.listing-price { background:#e9f7f2; color:#086b65; border-radius:12px; padding:10px 16px; font-weight:700; white-space:nowrap; }
-.listing-meta { display:flex; flex-wrap:wrap; gap:9px; margin-bottom:17px; }
-.listing-meta span { background:#f3f7f6; color:#45666a; border-radius:100px; padding:6px 12px; font-size:.84rem; font-weight:600; }
-.listing-meta .checked { background:#dff4e8; color:#146746; }
-.listing-meta .expired { background:#fff0e9; color:#a54c2c; }
-@media(max-width:650px) { .hero{padding:26px 23px} .block-container{padding-left:1rem;padding-right:1rem} .listing-name{font-size:1.25rem} }
+.listing-head { display:grid; grid-template-columns:minmax(230px,2.5fr) minmax(90px,.65fr) minmax(115px,.8fr) minmax(140px,1fr); align-items:center; gap:12px; margin:0 0 10px; }
+.listing-name { font:700 1.15rem 'Outfit',sans-serif; color:#18384a; line-height:1.3; }
+.listing-place { color:#607b7d; font-size:.83rem; margin-top:2px; }
+.listing-price { color:#086b65; font-weight:700; white-space:nowrap; }
+.listing-meta { color:#607b7d; font-size:.82rem; }
+.listing-status { font-size:.82rem; color:#607b7d; }
+.listing-status.checked { color:#146746; }
+.listing-status.expired { color:#a54c2c; }
+@media(max-width:650px) { .hero{padding:26px 23px} .block-container{padding-left:1rem;padding-right:1rem} .listing-head{grid-template-columns:1fr 1fr;gap:7px} .listing-name{grid-column:1 / -1} }
 </style>""", unsafe_allow_html=True)
 st.markdown("""<div class="hero"><div class="eyebrow">Dein Wohnungsagent · Region Basel</div>
 <h1>Finde ein Zuhause,<br>das zu dir passt.</h1>
@@ -360,11 +373,14 @@ if st.button("🔎 Wohnungen suchen", type="primary", use_container_width=True):
                 st.error(f"Suche fehlgeschlagen: {exc}")
 
 diag = st.session_state.get("diagnostic")
+if st.session_state.results:
+    st.session_state.results, _ = filter_listings(
+        st.session_state.results, towns, min_rooms, max_rooms, maximum)
 if diag:
     e = diag["excluded"]
     st.info(f"Suche {diag['seconds']:.1f} s · {diag['sources']} Webtreffer · "
             f"{diag['unique']} URLs · {diag['direct']} direkte Inserat-URLs · "
-            f"{diag['shown']} angezeigt · Ausschlüsse Ort/Zimmer/Budget: "
+            f"{len(st.session_state.results)} angezeigt · Ausschlüsse Ort/Zimmer/Budget: "
             f"{e['ort']}/{e['zimmer']}/{e['budget']} · "
             f"fehlgeschlagene Suchabfragen: {diag['errors']}")
 
@@ -386,9 +402,8 @@ for index, item in enumerate(list(st.session_state.results)):
         badge = "Nicht mehr verfügbar" if badge_class == "expired" else "Details geprüft" if badge_class == "checked" else "Details noch offen"
         safe = lambda value: html.escape(str(value))
         st.markdown(f'''<div class="listing-head"><div><div class="listing-name">🏠 {safe(name)}</div>
-<div class="listing-place">📍 {safe(place)}</div></div><div class="listing-price">{safe(visible)}</div></div>
-<div class="listing-meta"><span>🛏️ {safe(rooms)}</span><span class="{badge_class}">{safe(badge)}</span>
-<span>🌐 {safe(item['source'])}</span></div>''', unsafe_allow_html=True)
+<div class="listing-place">📍 {safe(place)}</div></div><div class="listing-meta">🛏️ {safe(rooms)}</div>
+<div class="listing-price">{safe(visible)}</div><div class="listing-status {badge_class}">{safe(badge)}<br>🌐 {safe(item['source'])}</div></div>''', unsafe_allow_html=True)
         actions = st.columns(3)
         if actions[0].button("🔍 Details prüfen", key="detail_" + url):
             with st.spinner("Originalinserat wird geprüft ..."):
@@ -458,4 +473,4 @@ for i, item in enumerate(list(st.session_state.saved)):
         save_saved()
         st.rerun()
 
-st.caption("Wohnungs-Finder Schweiz V12.4 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
+st.caption("Wohnungs-Finder Schweiz V12.5 · Angaben und Verfügbarkeit im Originalinserat prüfen.")
